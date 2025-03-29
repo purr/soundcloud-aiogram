@@ -570,25 +570,48 @@ def sanitize_filename(filename: str) -> str:
 def extract_artist_title(title: str) -> Tuple[str, str]:
     """
     Extract artist and title from the track title
+    Based on SCDL's approach for robust extraction
 
     Args:
         title: Track title (possibly containing artist name)
 
     Returns:
-        tuple: (artist, title)
+        tuple: (artist, title) or (None, title) if artist couldn't be extracted
     """
-    # Common delimiters in titles
-    delimiters = [" - ", " — ", " – ", " – "]
+    # List of dash characters used to separate artist and title
+    dash_separators = [" - ", " − ", " – ", " — ", " ― "]
 
-    for delimiter in delimiters:
-        if delimiter in title:
-            parts = title.split(delimiter, 1)
-            return parts[0].strip(), parts[1].strip()
+    # Count occurrences of each dash separator
+    dash_counts = {sep: title.count(sep) for sep in dash_separators}
+    total_dashes = sum(dash_counts.values())
 
-    # Try to extract from patterns like "Artist Name - Title"
+    # If there's more than one dash (of any type), don't attempt extraction
+    # to avoid incorrect splits in complex titles
+    if total_dashes > 1:
+        logger.info(
+            f"Multiple dash separators found in title, skipping extraction: {title}"
+        )
+        return None, title
+
+    # Try to split by each dash separator
+    for dash in dash_separators:
+        if dash not in title:
+            continue
+
+        artist_title = title.split(dash, maxsplit=1)
+        artist = artist_title[0].strip()
+        new_title = artist_title[1].strip()
+
+        logger.info(f"Extracted artist '{artist}' from title: {title}")
+        return artist, new_title
+
+    # Fallback: try generic regex pattern for dash-like characters
     match = re.match(r"^(.+?)\s*[-–—]\s*(.+)$", title)
     if match:
-        return match.group(1).strip(), match.group(2).strip()
+        artist = match.group(1).strip()
+        new_title = match.group(2).strip()
+        logger.info(f"Extracted artist '{artist}' from title using regex: {title}")
+        return artist, new_title
 
     # No artist found in title
     return None, title
@@ -604,29 +627,37 @@ async def add_id3_tags(filepath: str, track_data: dict) -> None:
     """
     logger.info(f"Adding ID3 tags to {filepath}")
     try:
-        # Get artist and title
+        # Get title
         title = track_data.get("title", "Unknown")
+        logger.info(f"Original title: {title}")
 
-        # Extract artist from title if enabled and not available
-        artist_from_metadata = None
+        # Get artist from different sources, prioritizing publisher_metadata
+        username = track_data.get("user", {}).get("username", "Unknown Artist")
+        artist = username  # Default to username
+
+        # Try to get artist from publisher_metadata
         if track_data.get("publisher_metadata") and track_data[
             "publisher_metadata"
         ].get("artist"):
-            artist_from_metadata = track_data["publisher_metadata"]["artist"]
+            artist = track_data["publisher_metadata"]["artist"]
+            logger.info(f"Using artist from publisher_metadata: {artist}")
 
-        username = track_data.get("user", {}).get("username", "Unknown Artist")
-
-        # Extract artist from title if configured
-        extracted_artist, extracted_title = None, title
+        # Extract artist from title if configured and not found in metadata
         if EXTRACT_ARTIST_FROM_TITLE:
             extracted_artist, extracted_title = extract_artist_title(title)
 
-        # Choose the best artist information available
-        artist = artist_from_metadata or extracted_artist or username
-
-        # If artist was successfully extracted from title, update the title
-        if EXTRACT_ARTIST_FROM_TITLE and extracted_artist:
-            title = extracted_title
+            # Only use extracted artist if it was found and we don't already have a better source
+            if extracted_artist:
+                # If we already have a publisher-provided artist, compare them
+                if artist != username and artist != extracted_artist:
+                    logger.info(
+                        f"Not using extracted artist '{extracted_artist}' because metadata artist '{artist}' is available"
+                    )
+                else:
+                    # Use extracted artist and title
+                    artist = extracted_artist
+                    title = extracted_title
+                    logger.info(f"Using extracted artist: {artist}, new title: {title}")
 
         # Create or clear existing tags
         audio = mutagen.File(filepath, easy=True)
@@ -678,7 +709,7 @@ async def add_id3_tags(filepath: str, track_data: dict) -> None:
             except Exception as e:
                 logger.warning(f"Could not add description as comment: {e}")
 
-        logger.info(f"ID3 tags added to {filepath}")
+        logger.info(f"ID3 tags added to {filepath}: Title='{title}', Artist='{artist}'")
     except Exception as e:
         logger.error(f"Error adding ID3 tags to {filepath}: {e}")
 
@@ -709,14 +740,38 @@ async def download_track(track_id: str, bot_user: Dict[str, Any]) -> Dict[str, A
         logger.error(f"Exception during track data retrieval: {e}")
         return {"success": False, "error": f"Error retrieving track data: {str(e)}"}
 
-    title = track_data.get("title", "Unknown")
-    logger.info(f"Track title: {title}")
+    # Original title
+    original_title = track_data.get("title", "Unknown")
 
-    # Get artist info
-    user = track_data.get("user", {})
-    artist = user.get("username", "Unknown Artist")
+    # Get artist and title with possible extraction
+    title = original_title
+    username = track_data.get("user", {}).get("username", "Unknown Artist")
+    artist = username  # Default to username
+
+    # Try to get artist from metadata
+    if track_data.get("publisher_metadata") and track_data["publisher_metadata"].get(
+        "artist"
+    ):
+        artist = track_data["publisher_metadata"]["artist"]
+        logger.info(f"Using artist '{artist}' from publisher metadata")
+
+    # Extract artist from title if configured
+    if EXTRACT_ARTIST_FROM_TITLE:
+        extracted_artist, extracted_title = extract_artist_title(original_title)
+        if extracted_artist:
+            # If we already have a publisher-provided artist, compare them
+            if artist != username and artist != extracted_artist:
+                logger.info(
+                    f"Not using extracted artist '{extracted_artist}' because metadata artist '{artist}' is available"
+                )
+            else:
+                # Use extracted artist and title
+                artist = extracted_artist
+                title = extracted_title
+                logger.info(f"Using extracted artist: {artist}, new title: {title}")
+
     if DEBUG_DOWNLOAD:
-        logger.debug(f"Artist from metadata: {artist}")
+        logger.debug(f"Artist: {artist}, Title: {title}")
 
     # Generate safe filename (no special characters)
     filename = NAME_FORMAT.format(artist=artist, title=title)
@@ -877,6 +932,9 @@ def get_track_info(track: dict) -> dict:
         username = "Unknown Artist"
         user_url = ""
 
+    # Original track title
+    original_title = track.get("title", "Unknown Title")
+
     # Extract publisher_metadata, handling missing data
     publisher_metadata = track.get("publisher_metadata", {})
     if not isinstance(publisher_metadata, dict):
@@ -884,7 +942,26 @@ def get_track_info(track: dict) -> dict:
 
     # Determine artist name from available sources
     artist = publisher_metadata.get("artist") or username
+    title = original_title
 
+    # Try to extract artist from title if enabled
+    if EXTRACT_ARTIST_FROM_TITLE:
+        extracted_artist, extracted_title = extract_artist_title(original_title)
+        if extracted_artist:
+            # If we have a publisher-provided artist, prefer it
+            if publisher_metadata.get("artist"):
+                logger.debug(
+                    f"Keeping publisher artist '{artist}' over extracted '{extracted_artist}'"
+                )
+            else:
+                # Use the extracted artist and title
+                artist = extracted_artist
+                title = extracted_title
+                logger.info(
+                    f"Updated artist to '{artist}' and title to '{title}' from original '{original_title}'"
+                )
+
+    # Get artwork URL
     artwork_url = track.get("artwork_url", "")
 
     if artwork_url == "" or not artwork_url:
@@ -907,7 +984,8 @@ def get_track_info(track: dict) -> dict:
 
     return {
         "id": track.get("id"),
-        "title": track.get("title", "Unknown Title"),
+        "title": title,
+        "original_title": original_title,  # Keep original title for reference
         "artwork_url": artwork_url,
         "permalink_url": track.get("permalink_url", ""),
         "duration": format_duration(current_duration),
