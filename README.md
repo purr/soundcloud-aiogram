@@ -72,6 +72,7 @@ Supported link formats:
 
 ## Version History
 
+- v0.7.94: Added high-quality artwork embedding directly into ID3 tags of downloaded audio files
 - v0.7.93: Enhanced download system with improved HLS stream handling and advanced quality scoring for all audio streams
 - v0.7.92: Improved track download support for HLS-only tracks and direct downloadable tracks, removed local artwork download
 - v0.7.91: Fixed artwork download functionality to properly save and attach artwork to audio files

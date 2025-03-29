@@ -43,4 +43,4 @@ MAX_PLAYLIST_TRACKS_TO_SHOW = 50  # Maximum number of tracks to display from a p
 SOUNDCLOUD_LOGO_URL = "https://d21buns5ku92am.cloudfront.net/26628/images/419679-1x1_SoundCloudLogo_cloudmark-f5912b-original-1645807040.jpg"
 
 # Version
-VERSION = "0.7.93"
+VERSION = "0.7.94"

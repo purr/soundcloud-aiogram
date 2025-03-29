@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 import aiohttp
 import mutagen
 import aiofiles
-from mutagen.id3 import ID3
+from mutagen.id3 import ID3, APIC
 
 from utils import get_high_quality_artwork_url
 from config import (
@@ -615,6 +615,45 @@ def extract_artist_title(title: str) -> Tuple[str, str]:
     return None, title
 
 
+async def download_artwork(artwork_url: str) -> Optional[bytes]:
+    """
+    Download artwork image from URL
+
+    Args:
+        artwork_url: URL of the artwork image
+
+    Returns:
+        bytes: Image data if successful, None otherwise
+    """
+    if not artwork_url:
+        logger.warning("No artwork URL provided")
+        return None
+
+    logger.info(f"Downloading artwork from: {artwork_url}")
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(artwork_url) as response:
+                if response.status != 200:
+                    logger.error(f"Failed to download artwork: HTTP {response.status}")
+                    return None
+
+                image_data = await response.read()
+
+                # Validate that we got an image
+                if len(image_data) < 100:
+                    logger.error(
+                        f"Downloaded artwork is too small: {len(image_data)} bytes"
+                    )
+                    return None
+
+                logger.info(f"Artwork downloaded successfully: {len(image_data)} bytes")
+                return image_data
+    except Exception as e:
+        logger.error(f"Error downloading artwork: {e}")
+        return None
+
+
 async def add_id3_tags(filepath: str, track_data: dict) -> None:
     """
     Add ID3 tags to the downloaded audio file
@@ -689,9 +728,11 @@ async def add_id3_tags(filepath: str, track_data: dict) -> None:
         audio.save()
 
         # Add description as comment using ID3 specific tags
-        if track_data.get("description"):
-            try:
-                id3 = ID3(filepath)
+        try:
+            id3 = ID3(filepath)
+
+            # Add description as comment if available
+            if track_data.get("description"):
                 from mutagen.id3 import COMM
 
                 id3.add(
@@ -702,9 +743,43 @@ async def add_id3_tags(filepath: str, track_data: dict) -> None:
                         text=track_data["description"],
                     )
                 )
-                id3.save()
-            except Exception as e:
-                logger.warning(f"Could not add description as comment: {e}")
+
+            # Get artwork URL and download artwork
+            artwork_url = track_data.get("artwork_url", "")
+            if artwork_url:
+                # Convert to high-quality version
+                artwork_url = get_high_quality_artwork_url(artwork_url)
+
+                # Download artwork
+                artwork_data = await download_artwork(artwork_url)
+
+                if artwork_data:
+                    # Add artwork to ID3 tags
+                    mime_type = (
+                        "image/jpeg"
+                        if artwork_url.endswith(".jpg") or artwork_url.endswith(".jpeg")
+                        else "image/png"
+                    )
+                    id3.add(
+                        APIC(
+                            encoding=3,  # UTF-8
+                            mime=mime_type,
+                            type=3,  # Cover (front)
+                            desc="Cover",
+                            data=artwork_data,
+                        )
+                    )
+                    logger.info(
+                        f"Artwork embedded in ID3 tags: {len(artwork_data)} bytes"
+                    )
+                else:
+                    logger.warning("Failed to download artwork for embedding")
+
+            # Save ID3 tags
+            id3.save(v2_version=3)
+
+        except Exception as e:
+            logger.warning(f"Error adding ID3 specific tags: {e}")
 
         logger.info(f"ID3 tags added to {filepath}: Title='{title}', Artist='{artist}'")
     except Exception as e:
