@@ -1,4 +1,3 @@
-import os
 import html
 import time
 import asyncio
@@ -24,7 +23,6 @@ from aiogram.client.default import DefaultBotProperties
 
 from utils import (
     SOUNDCLOUD_URL_PATTERN,
-    refresh_client_id,
     format_error_caption,
     extract_soundcloud_url,
     format_success_caption,
@@ -35,7 +33,6 @@ from utils import (
 from config import (
     VERSION,
     BOT_TOKEN,
-    DOWNLOAD_PATH,
     SEARCH_TIMEOUT,
     SOUNDCLOUD_LOGO_URL,
     MAX_PLAYLIST_TRACKS_TO_SHOW,
@@ -95,9 +92,6 @@ def is_permission_error(error):
 
 # Configure logging
 logger = get_logger(__name__)
-
-# Log the version
-logger.info(f"Starting SoundCloud Search Bot v{VERSION}")
 
 # Initialize bot and dispatcher
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -2004,34 +1998,3 @@ async def process_download_queue():
             logger.error(f"Error in download queue worker: {e}", exc_info=True)
             # Sleep briefly to avoid CPU spinning in case of continuous errors
             await asyncio.sleep(1)
-
-
-async def main():
-    """Main function to start the bot"""
-    # Create necessary directories
-    os.makedirs(DOWNLOAD_PATH, exist_ok=True)
-
-    # Get bot info and log it
-    bot_info = await bot.get_me()
-    logger.info(f"{bot_info.full_name} @{bot_info.username} ({bot_info.id})")
-
-    # Get a fresh client ID at startup
-    logger.info("Getting fresh SoundCloud client ID...")
-    await refresh_client_id()
-    logger.info("Successfully obtained fresh client ID")
-
-    # Start the download queue worker
-    asyncio.create_task(process_download_queue())
-
-    dp.include_router(router)
-
-    # Start polling
-    await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
-
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Bot stopped!")

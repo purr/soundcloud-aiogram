@@ -326,7 +326,13 @@ async def send_audio_file(
                     ],
                     [
                         InlineKeyboardButton(
-                            text="🏷️ Edit ID3 Tags",
+                            text="❓ Wrong Artist/Title?",
+                            url="https://t.me/id3_robot?start=dlmus",
+                        ),
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            text="❗ Click here to modify!",
                             url="https://t.me/id3_robot?start=dlmus",
                         ),
                     ],
