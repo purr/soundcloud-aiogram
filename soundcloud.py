@@ -14,7 +14,6 @@ from mutagen.id3 import ID3, APIC
 
 from utils import get_high_quality_artwork_url
 from config import (
-    CLIENT_ID,
     NAME_FORMAT,
     DEBUG_SEARCH,
     DOWNLOAD_PATH,
@@ -25,12 +24,43 @@ from config import (
     EXTRACT_ARTIST_FROM_TITLE,
 )
 from utils.logger import get_logger
+from utils.client_id import get_client_id
 
 # Configure logging
 logger = get_logger(__name__)
 
 # Create downloads directory if it doesn't exist
 pathlib.Path(DOWNLOAD_PATH).mkdir(parents=True, exist_ok=True)
+
+# Client ID cache
+_client_id: Optional[str] = None
+
+
+async def get_cached_client_id() -> str:
+    """
+    Get a cached client ID or generate a new one
+
+    Returns:
+        str: A valid SoundCloud client ID
+    """
+    global _client_id
+
+    if _client_id is None:
+        _client_id = await get_client_id()
+
+    return _client_id
+
+
+async def refresh_client_id() -> str:
+    """
+    Force refresh the client ID
+
+    Returns:
+        str: A new valid SoundCloud client ID
+    """
+    global _client_id
+    _client_id = await get_client_id()
+    return _client_id
 
 
 async def search_soundcloud(query: str, limit: int = 50) -> dict:
@@ -50,6 +80,8 @@ async def search_soundcloud(query: str, limit: int = 50) -> dict:
         logger.info(f"Searching SoundCloud for: '{query}'")
 
     try:
+        # Get a valid client ID
+        client_id = await get_cached_client_id()
 
         # No cache or expired, perform the search
         async with aiohttp.ClientSession() as session:
@@ -57,12 +89,12 @@ async def search_soundcloud(query: str, limit: int = 50) -> dict:
             params = {
                 "q": query,
                 "limit": limit,
-                "client_id": CLIENT_ID,
+                "client_id": client_id,
             }
 
             # Log the request URL with parameters
             if DEBUG_SEARCH:
-                url = f"{SOUNDCLOUD_SEARCH_API}?q={query}&limit={limit}&client_id={CLIENT_ID}"
+                url = f"{SOUNDCLOUD_SEARCH_API}?q={query}&limit={limit}&client_id={client_id}"
                 logger.info(f"Request URL: {url}")
 
             async with session.get(SOUNDCLOUD_SEARCH_API, params=params) as response:
@@ -107,6 +139,30 @@ async def search_soundcloud(query: str, limit: int = 50) -> dict:
                         logger.info(f"Found {total_results} tracks")
 
                     return data
+                # Client ID might be expired, try refreshing once
+                elif status == 401 or status == 403:
+                    logger.warning("Client ID might be expired, refreshing...")
+                    client_id = await refresh_client_id()
+
+                    # Retry with new client ID
+                    params["client_id"] = client_id
+                    async with session.get(
+                        SOUNDCLOUD_SEARCH_API, params=params
+                    ) as retry_response:
+                        if retry_response.status == 200:
+                            data = await retry_response.json()
+                            collection_length = len(data.get("collection", []))
+                            total_results = data.get("total_results", 0)
+                            logger.info(
+                                f"Found {total_results} tracks after refreshing client ID"
+                            )
+                            return data
+                        else:
+                            error_text = await retry_response.text()
+                            logger.error(
+                                f"SoundCloud API error after refresh: Status {retry_response.status}, Response: {error_text[:200]}"
+                            )
+                            return {"collection": [], "total_results": 0}
                 else:
                     error_text = await response.text()
                     logger.error(
@@ -132,9 +188,12 @@ async def get_track(track_id: Union[str, int]) -> dict:
     """
     logger.info(f"Getting track details for track ID: {track_id}")
     try:
+        # Get a valid client ID
+        client_id = await get_cached_client_id()
+
         async with aiohttp.ClientSession() as session:
             params = {
-                "client_id": CLIENT_ID,
+                "client_id": client_id,
             }
 
             url = f"{SOUNDCLOUD_TRACK_API}/{track_id}"
@@ -145,6 +204,23 @@ async def get_track(track_id: Union[str, int]) -> dict:
                 if status == 200:
                     data = await response.json()
                     return data
+                # Client ID might be expired, try refreshing once
+                elif status == 401 or status == 403:
+                    logger.warning("Client ID might be expired, refreshing...")
+                    client_id = await refresh_client_id()
+
+                    # Retry with new client ID
+                    params["client_id"] = client_id
+                    async with session.get(url, params=params) as retry_response:
+                        if retry_response.status == 200:
+                            data = await retry_response.json()
+                            return data
+                        else:
+                            error_text = await retry_response.text()
+                            logger.error(
+                                f"SoundCloud API error after refresh: Status {retry_response.status}, Response: {error_text[:200]}"
+                            )
+                            return {}
                 else:
                     error_text = await response.text()
                     logger.error(
@@ -168,9 +244,12 @@ async def get_playlist(playlist_id: Union[str, int]) -> dict:
     """
     logger.info(f"Getting playlist details for playlist ID: {playlist_id}")
     try:
+        # Get a valid client ID
+        client_id = await get_cached_client_id()
+
         async with aiohttp.ClientSession() as session:
             params = {
-                "client_id": CLIENT_ID,
+                "client_id": client_id,
             }
 
             url = f"https://api-v2.soundcloud.com/playlists/{playlist_id}"
@@ -181,6 +260,23 @@ async def get_playlist(playlist_id: Union[str, int]) -> dict:
                 if status == 200:
                     data = await response.json()
                     return data
+                # Client ID might be expired, try refreshing once
+                elif status == 401 or status == 403:
+                    logger.warning("Client ID might be expired, refreshing...")
+                    client_id = await refresh_client_id()
+
+                    # Retry with new client ID
+                    params["client_id"] = client_id
+                    async with session.get(url, params=params) as retry_response:
+                        if retry_response.status == 200:
+                            data = await retry_response.json()
+                            return data
+                        else:
+                            error_text = await retry_response.text()
+                            logger.error(
+                                f"SoundCloud API error after refresh: Status {retry_response.status}, Response: {error_text[:200]}"
+                            )
+                            return {}
                 else:
                     error_text = await response.text()
                     logger.error(
@@ -220,12 +316,15 @@ async def get_tracks_batch(track_ids: List[str]) -> List[dict]:
             # Convert list of IDs to comma-separated string
             ids_param = ",".join(str(id) for id in batch)
 
+            # Get a valid client ID
+            client_id = await get_cached_client_id()
+
             async with aiohttp.ClientSession() as session:
                 # Construct the URL with proper parameters
                 url = "https://api-v2.soundcloud.com/tracks"
                 params = {
                     "ids": ids_param,
-                    "client_id": CLIENT_ID,
+                    "client_id": client_id,
                     "app_version": "1743158692",  # Required by the API
                     "app_locale": "en",  # Required by the API
                 }
@@ -280,10 +379,13 @@ async def resolve_url(url: str) -> dict:
     """
     logger.info(f"Resolving SoundCloud URL: {url}")
     try:
+        # Get a valid client ID
+        client_id = await get_cached_client_id()
+
         async with aiohttp.ClientSession() as session:
             params = {
                 "url": url,
-                "client_id": CLIENT_ID,
+                "client_id": client_id,
             }
 
             async with session.get(SOUNDCLOUD_RESOLVE_API, params=params) as response:
@@ -293,6 +395,25 @@ async def resolve_url(url: str) -> dict:
                 if status == 200:
                     data = await response.json()
                     return data
+                # Client ID might be expired, try refreshing once
+                elif status == 401 or status == 403:
+                    logger.warning("Client ID might be expired, refreshing...")
+                    client_id = await refresh_client_id()
+
+                    # Retry with new client ID
+                    params["client_id"] = client_id
+                    async with session.get(
+                        SOUNDCLOUD_RESOLVE_API, params=params
+                    ) as retry_response:
+                        if retry_response.status == 200:
+                            data = await retry_response.json()
+                            return data
+                        else:
+                            error_text = await retry_response.text()
+                            logger.error(
+                                f"SoundCloud API error after refresh: Status {retry_response.status}, Response: {error_text[:200]}"
+                            )
+                            return {}
                 else:
                     error_text = await response.text()
                     logger.error(
@@ -306,7 +427,7 @@ async def resolve_url(url: str) -> dict:
 
 async def download_audio(url: str, filepath: str) -> bool:
     """
-    Download audio file from URL
+    Download audio file from URL with retries and fallbacks
 
     Args:
         url: Download URL
@@ -323,103 +444,132 @@ async def download_audio(url: str, filepath: str) -> bool:
         logger.info("Detected HLS stream (m3u8), will use special handling")
         return await download_hls_audio(url, filepath)
 
-    # Standard download for progressive streams and direct downloads
-    try:
-        async with aiohttp.ClientSession() as session:
-            if DEBUG_DOWNLOAD:
-                logger.debug(f"Starting download request to URL: {url}")
+    # Maximum number of retries
+    max_retries = 3
+    retry_count = 0
+    last_error = None
 
-            async with session.get(url) as response:
-                status = response.status
-                logger.info(f"Download response status: {status}")
+    while retry_count < max_retries:
+        try:
+            async with aiohttp.ClientSession() as session:
+                if DEBUG_DOWNLOAD:
+                    logger.debug(f"Starting download request to URL: {url}")
 
-                if status == 200:
-                    content_length = int(response.headers.get("Content-Length", 0))
-                    content_type = response.headers.get("Content-Type", "unknown")
-                    logger.info(
-                        f"File size: {content_length / 1024 / 1024:.2f} MB, Content-Type: {content_type}"
-                    )
+                # Add client ID to URL if not present
+                if "client_id=" not in url:
+                    separator = "&" if "?" in url else "?"
+                    url = f"{url}{separator}client_id={await get_cached_client_id()}"
 
-                    if DEBUG_DOWNLOAD:
-                        headers = dict(response.headers)
-                        logger.debug(f"Full response headers: {headers}")
+                async with session.get(url) as response:
+                    status = response.status
+                    logger.info(f"Download response status: {status}")
 
-                    # Check if we might have received an m3u8 playlist despite not detecting it in the URL
-                    if content_length < 1000 and (
-                        content_type.startswith("application/")
-                        or content_type.startswith("text/")
-                    ):
-                        content = await response.text()
-                        if "#EXTM3U" in content or ".m3u8" in content:
-                            logger.info(
-                                "Detected HLS stream from response content, will use special handling"
+                    if status == 200:
+                        content_length = int(response.headers.get("Content-Length", 0))
+                        content_type = response.headers.get("Content-Type", "unknown")
+                        logger.info(
+                            f"File size: {content_length / 1024 / 1024:.2f} MB, Content-Type: {content_type}"
+                        )
+
+                        if DEBUG_DOWNLOAD:
+                            headers = dict(response.headers)
+                            logger.debug(f"Full response headers: {headers}")
+
+                        # Check if we might have received an m3u8 playlist despite not detecting it in the URL
+                        if content_length < 1000 and (
+                            content_type.startswith("application/")
+                            or content_type.startswith("text/")
+                        ):
+                            content = await response.text()
+                            if "#EXTM3U" in content or ".m3u8" in content:
+                                logger.info(
+                                    "Detected HLS stream from response content, will use special handling"
+                                )
+                                return await download_hls_audio(url, filepath)
+
+                        # Create directory if it doesn't exist
+                        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+
+                        async with aiofiles.open(filepath, "wb") as f:
+                            chunk_size = 1024 * 1024  # 1MB chunks
+                            downloaded = 0
+                            start_time = time.time()
+                            last_log_time = start_time
+
+                            async for chunk in response.content.iter_chunked(
+                                chunk_size
+                            ):
+                                await f.write(chunk)
+                                downloaded += len(chunk)
+
+                                # Log progress for all files if DEBUG_DOWNLOAD is True
+                                # or for large files only if DEBUG_DOWNLOAD is False
+                                current_time = time.time()
+                                if DEBUG_DOWNLOAD or (content_length > 5 * 1024 * 1024):
+                                    # Log every second at most
+                                    if current_time - last_log_time >= 1.0:
+                                        progress = (
+                                            downloaded / content_length * 100
+                                            if content_length
+                                            else 0
+                                        )
+                                        speed = (
+                                            downloaded
+                                            / (current_time - start_time)
+                                            / 1024
+                                        )  # KB/s
+                                        logger.info(
+                                            f"Download progress: {progress:.1f}% ({downloaded / (1024 * 1024):.2f} MB / {content_length / (1024 * 1024):.2f} MB) - {speed:.1f} KB/s"
+                                        )
+                                        last_log_time = current_time
+
+                        download_time = time.time() - start_time
+                        logger.info(
+                            f"Download completed: {filepath} in {download_time:.2f} seconds"
+                        )
+
+                        # Validate the downloaded file
+                        if os.path.getsize(filepath) < 1000:  # Less than 1 KB
+                            logger.error(
+                                f"Downloaded file is too small: {os.path.getsize(filepath)} bytes"
                             )
-                            return await download_hls_audio(url, filepath)
+                            # Try next retry
+                            retry_count += 1
+                            continue
 
-                    # Create directory if it doesn't exist
-                    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+                        return True
 
-                    async with aiofiles.open(filepath, "wb") as f:
-                        chunk_size = 1024 * 1024  # 1MB chunks
-                        downloaded = 0
-                        start_time = time.time()
-                        last_log_time = start_time
-
-                        async for chunk in response.content.iter_chunked(chunk_size):
-                            await f.write(chunk)
-                            downloaded += len(chunk)
-
-                            # Log progress for all files if DEBUG_DOWNLOAD is True
-                            # or for large files only if DEBUG_DOWNLOAD is False
-                            current_time = time.time()
-                            if DEBUG_DOWNLOAD or (content_length > 5 * 1024 * 1024):
-                                # Log every second at most
-                                if current_time - last_log_time >= 1.0:
-                                    progress = (
-                                        downloaded / content_length * 100
-                                        if content_length
-                                        else 0
-                                    )
-                                    speed = (
-                                        downloaded / (current_time - start_time) / 1024
-                                    )  # KB/s
-                                    logger.info(
-                                        f"Download progress: {progress:.1f}% ({downloaded / (1024 * 1024):.2f} MB / {content_length / (1024 * 1024):.2f} MB) - {speed:.1f} KB/s"
-                                    )
-                                    last_log_time = current_time
-
-                    download_time = time.time() - start_time
-                    logger.info(
-                        f"Download completed: {filepath} in {download_time:.2f} seconds"
-                    )
-
-                    if DEBUG_DOWNLOAD:
-                        avg_speed = (
-                            content_length / download_time / 1024
-                            if download_time > 0
-                            else 0
+                    elif status in (401, 403):
+                        logger.warning(
+                            f"Got {status} error, refreshing client ID and retrying..."
                         )
-                        logger.debug(f"Average download speed: {avg_speed:.1f} KB/s")
+                        await refresh_client_id()
+                        retry_count += 1
+                        continue
+                    else:
+                        error_text = await response.text()
+                        last_error = f"Download failed: Status {status}, Response: {error_text[:200]}"
+                        logger.error(last_error)
+                        retry_count += 1
+                        continue
 
-                    # Validate the downloaded file
-                    if os.path.getsize(filepath) < 1000:  # Less than 1 KB
-                        logger.error(
-                            f"Downloaded file is too small: {os.path.getsize(filepath)} bytes"
-                        )
-                        return False
+        except Exception as e:
+            last_error = f"Exception during download: {type(e).__name__}: {e}"
+            logger.error(last_error, exc_info=True)
+            retry_count += 1
+            continue
 
-                    return True
-                else:
-                    error_text = await response.text()
-                    logger.error(
-                        f"Download failed: Status {status}, Response: {error_text[:200]}"
-                    )
-                    return False
-    except Exception as e:
+    # If we get here, all retries failed
+    if retry_count == max_retries:
         logger.error(
-            f"Exception during download: {type(e).__name__}: {e}", exc_info=True
+            f"All {max_retries} download attempts failed. Last error: {last_error}"
         )
-        return False
+
+        # Try fallback download method
+        logger.info("Attempting fallback download method...")
+        return await download_audio_fallback(url, filepath)
+
+    return False
 
 
 async def download_hls_audio(url: str, filepath: str) -> bool:
@@ -1158,7 +1308,7 @@ async def extract_track_id_from_url(url: str) -> Union[str, Dict[str, Any]]:
         # Build API request
         params = {
             "url": url,
-            "client_id": CLIENT_ID,
+            "client_id": await get_cached_client_id(),
         }
 
         async with aiohttp.ClientSession() as session:
@@ -1235,7 +1385,7 @@ async def cleanup_files(filepath: str) -> None:
 
 async def get_download_url(track_data: dict) -> Optional[str]:
     """
-    Get best quality download URL for a track
+    Get best quality download URL for a track with retries
 
     Args:
         track_data: Track data from SoundCloud API
@@ -1245,161 +1395,213 @@ async def get_download_url(track_data: dict) -> Optional[str]:
     """
     logger.info(f"Getting download URL for track: {track_data.get('title', 'Unknown')}")
 
-    try:
-        # Check if track is downloadable directly (usually free downloads provided by creators)
-        if track_data.get("downloadable", False):
-            logger.info("Track is marked as downloadable, checking download URL")
+    max_retries = 3
+    retry_count = 0
+    last_error = None
 
-            # Some tracks are marked as downloadable but don't have a download_url
-            # In this case, we need to construct it manually
-            if "download_url" in track_data and track_data["download_url"]:
-                download_url = track_data["download_url"]
-                logger.info("Using provided download_url from track data")
+    while retry_count < max_retries:
+        try:
+            # Check if track is downloadable directly (usually free downloads provided by creators)
+            if track_data.get("downloadable", False):
+                logger.info("Track is marked as downloadable, checking download URL")
+
+                # Some tracks are marked as downloadable but don't have a download_url
+                # In this case, we need to construct it manually
+                if "download_url" in track_data and track_data["download_url"]:
+                    download_url = track_data["download_url"]
+                    logger.info("Using provided download_url from track data")
+                else:
+                    # Construct download URL manually using the track ID
+                    track_id = track_data.get("id")
+                    download_url = (
+                        f"https://api-v2.soundcloud.com/tracks/{track_id}/download"
+                    )
+                    logger.info("Constructed download URL manually using track ID")
+
+                # Add client_id to download_url
+                if "?" in download_url:
+                    download_url += f"&client_id={await get_cached_client_id()}"
+                else:
+                    download_url += f"?client_id={await get_cached_client_id()}"
+
+                # Try to validate the download URL
+                async with aiohttp.ClientSession() as session:
+                    async with session.head(download_url) as response:
+                        if response.status == 200:
+                            return download_url
+                        elif response.status in (401, 403):
+                            logger.warning(
+                                "Download URL validation failed, refreshing client ID..."
+                            )
+                            await refresh_client_id()
+                            retry_count += 1
+                            continue
+                        else:
+                            logger.warning(
+                                f"Download URL validation failed with status {response.status}"
+                            )
+                            # Fall through to streaming URL logic
+
+            # If not directly downloadable or direct download failed, get the streaming URL
+            # Find the best quality stream
+            logger.info("Track not directly downloadable, finding best quality stream")
+
+            transcodings = []
+            if "media" in track_data and "transcodings" in track_data["media"]:
+                transcodings = track_data["media"]["transcodings"]
+                logger.info(f"Found {len(transcodings)} transcodings")
             else:
-                # Construct download URL manually using the track ID
-                track_id = track_data.get("id")
-                download_url = (
-                    f"https://api-v2.soundcloud.com/tracks/{track_id}/download"
+                logger.error("No media/transcodings found in track data")
+                if DEBUG_DOWNLOAD:
+                    logger.debug(f"Track data keys: {list(track_data.keys())}")
+                    if "media" in track_data:
+                        logger.debug(f"Media keys: {list(track_data['media'].keys())}")
+
+            if not transcodings:
+                logger.error("No transcodings found for track")
+                retry_count += 1
+                continue
+
+            # Create a quality score mapping for different formats and protocols
+            # Higher score means better quality
+            quality_scores = {
+                # Progressive streams (usually better for downloading)
+                "progressive": {
+                    "mp3_0": 60,  # MP3 standard quality
+                    "mp3_1": 70,  # MP3 high quality
+                    "mp3_2": 80,  # MP3 highest quality
+                    "opus_0": 75,  # Opus standard quality
+                    "opus_1": 85,  # Opus high quality
+                    "aac_0": 65,  # AAC standard quality
+                    "aac_1": 75,  # AAC high quality
+                },
+                # HLS streams
+                "hls": {
+                    "mp3_0": 40,  # MP3 standard quality
+                    "mp3_1": 50,  # MP3 high quality
+                    "opus_0": 55,  # Opus standard quality
+                    "opus_1": 65,  # Opus high quality
+                    "aac_0": 45,  # AAC standard quality
+                    "aac_1": 55,  # AAC high quality
+                },
+            }
+
+            # Score all available transcodings
+            scored_transcodings = []
+            for encoding in transcodings:
+                protocol = encoding.get("format", {}).get("protocol", "")
+                preset = encoding.get("preset", "")
+
+                # Extract format and quality level
+                format_match = None
+                if "_" in preset:
+                    format_parts = preset.split("_")
+                    if len(format_parts) >= 2:
+                        format_type = format_parts[0]  # e.g., "mp3", "opus", "aac"
+                        quality_level = "_".join(
+                            format_parts[1:]
+                        )  # e.g., "0", "1", "0_0"
+
+                        # Simplify multi-part quality levels (e.g., "0_1" to "1")
+                        # We prefer the highest number in multi-part quality designations
+                        if "_" in quality_level:
+                            quality_parts = [
+                                int(q) for q in quality_level.split("_") if q.isdigit()
+                            ]
+                            simplified_quality = (
+                                str(max(quality_parts)) if quality_parts else "0"
+                            )
+                            format_match = f"{format_type}_{simplified_quality}"
+                        else:
+                            format_match = f"{format_type}_{quality_level}"
+
+                # Assign score based on protocol and format
+                score = 0
+                if (
+                    protocol in quality_scores
+                    and format_match in quality_scores[protocol]
+                ):
+                    score = quality_scores[protocol][format_match]
+                elif protocol == "progressive":
+                    # Default score for progressive formats we don't explicitly know
+                    score = 40
+                elif protocol == "hls":
+                    # Default score for HLS formats we don't explicitly know
+                    score = 30
+
+                # Add small bonus to higher numbers in preset (assuming higher = better quality)
+                # This helps differentiate between similar formats
+                if preset:
+                    digits = [int(d) for d in preset if d.isdigit()]
+                    if digits:
+                        score += min(sum(digits), 10)  # Max 10 point bonus
+
+                logger.info(f"Scored transcoding: {preset} ({protocol}) = {score}")
+                scored_transcodings.append(
+                    {
+                        "encoding": encoding,
+                        "score": score,
+                        "protocol": protocol,
+                        "preset": preset,
+                    }
                 )
-                logger.info("Constructed download URL manually using track ID")
 
-            # Add client_id to download_url
-            if "?" in download_url:
-                download_url += f"&client_id={CLIENT_ID}"
-            else:
-                download_url += f"?client_id={CLIENT_ID}"
+            # Sort by score in descending order (highest first)
+            scored_transcodings.sort(key=lambda x: x["score"], reverse=True)
 
-            return download_url
+            # Try to get stream URL from each transcoding in order of score
+            for idx, item in enumerate(scored_transcodings):
+                encoding = item["encoding"]
+                score = item["score"]
+                protocol = item["protocol"]
+                preset = item["preset"]
 
-        # If not directly downloadable, get the streaming URL
-        # Find the best quality stream
-        logger.info("Track not directly downloadable, finding best quality stream")
+                logger.info(
+                    f"Trying {idx + 1}/{len(scored_transcodings)}: {preset} ({protocol}) with score {score}"
+                )
+                stream_url = await get_stream_url(encoding.get("url"))
 
-        transcodings = []
-        if "media" in track_data and "transcodings" in track_data["media"]:
-            transcodings = track_data["media"]["transcodings"]
-            logger.info(f"Found {len(transcodings)} transcodings")
-        else:
-            logger.error("No media/transcodings found in track data")
-            if DEBUG_DOWNLOAD:
-                logger.debug(f"Track data keys: {list(track_data.keys())}")
-                if "media" in track_data:
-                    logger.debug(f"Media keys: {list(track_data['media'].keys())}")
+                if stream_url:
+                    # Validate the stream URL
+                    async with aiohttp.ClientSession() as session:
+                        async with session.head(stream_url) as response:
+                            if response.status == 200:
+                                logger.info(
+                                    f"Successfully got stream URL for {preset} ({protocol})"
+                                )
+                                return stream_url
+                            elif response.status in (401, 403):
+                                logger.warning(
+                                    "Stream URL validation failed, refreshing client ID..."
+                                )
+                                await refresh_client_id()
+                                break  # Break inner loop to retry with new client ID
+                            else:
+                                logger.warning(
+                                    f"Stream URL validation failed with status {response.status}"
+                                )
+                                continue
 
-        if not transcodings:
-            logger.error("No transcodings found for track")
-            return None
+                logger.warning(f"Failed to get stream URL for {preset} ({protocol})")
 
-        # Create a quality score mapping for different formats and protocols
-        # Higher score means better quality
-        quality_scores = {
-            # Progressive streams (usually better for downloading)
-            "progressive": {
-                "mp3_0": 60,  # MP3 standard quality
-                "mp3_1": 70,  # MP3 high quality
-                "mp3_2": 80,  # MP3 highest quality
-                "opus_0": 75,  # Opus standard quality
-                "opus_1": 85,  # Opus high quality
-                "aac_0": 65,  # AAC standard quality
-                "aac_1": 75,  # AAC high quality
-            },
-            # HLS streams
-            "hls": {
-                "mp3_0": 40,  # MP3 standard quality
-                "mp3_1": 50,  # MP3 high quality
-                "opus_0": 55,  # Opus standard quality
-                "opus_1": 65,  # Opus high quality
-                "aac_0": 45,  # AAC standard quality
-                "aac_1": 55,  # AAC high quality
-            },
-        }
+            retry_count += 1
 
-        # Score all available transcodings
-        scored_transcodings = []
-        for encoding in transcodings:
-            protocol = encoding.get("format", {}).get("protocol", "")
-            preset = encoding.get("preset", "")
+        except Exception as e:
+            last_error = f"Error getting download URL: {str(e)}"
+            logger.error(last_error, exc_info=True)
+            retry_count += 1
+            continue
 
-            # Extract format and quality level
-            format_match = None
-            if "_" in preset:
-                format_parts = preset.split("_")
-                if len(format_parts) >= 2:
-                    format_type = format_parts[0]  # e.g., "mp3", "opus", "aac"
-                    quality_level = "_".join(format_parts[1:])  # e.g., "0", "1", "0_0"
-
-                    # Simplify multi-part quality levels (e.g., "0_1" to "1")
-                    # We prefer the highest number in multi-part quality designations
-                    if "_" in quality_level:
-                        quality_parts = [
-                            int(q) for q in quality_level.split("_") if q.isdigit()
-                        ]
-                        simplified_quality = (
-                            str(max(quality_parts)) if quality_parts else "0"
-                        )
-                        format_match = f"{format_type}_{simplified_quality}"
-                    else:
-                        format_match = f"{format_type}_{quality_level}"
-
-            # Assign score based on protocol and format
-            score = 0
-            if protocol in quality_scores and format_match in quality_scores[protocol]:
-                score = quality_scores[protocol][format_match]
-            elif protocol == "progressive":
-                # Default score for progressive formats we don't explicitly know
-                score = 40
-            elif protocol == "hls":
-                # Default score for HLS formats we don't explicitly know
-                score = 30
-
-            # Add small bonus to higher numbers in preset (assuming higher = better quality)
-            # This helps differentiate between similar formats
-            if preset:
-                digits = [int(d) for d in preset if d.isdigit()]
-                if digits:
-                    score += min(sum(digits), 10)  # Max 10 point bonus
-
-            logger.info(f"Scored transcoding: {preset} ({protocol}) = {score}")
-            scored_transcodings.append(
-                {
-                    "encoding": encoding,
-                    "score": score,
-                    "protocol": protocol,
-                    "preset": preset,
-                }
-            )
-
-        # Sort by score in descending order (highest first)
-        scored_transcodings.sort(key=lambda x: x["score"], reverse=True)
-
-        # Try to get stream URL from each transcoding in order of score
-        for idx, item in enumerate(scored_transcodings):
-            encoding = item["encoding"]
-            score = item["score"]
-            protocol = item["protocol"]
-            preset = item["preset"]
-
-            logger.info(
-                f"Trying {idx + 1}/{len(scored_transcodings)}: {preset} ({protocol}) with score {score}"
-            )
-            stream_url = await get_stream_url(encoding.get("url"))
-
-            if stream_url:
-                logger.info(f"Successfully got stream URL for {preset} ({protocol})")
-                return stream_url
-
-            logger.warning(f"Failed to get stream URL for {preset} ({protocol})")
-
-        logger.error("No suitable streams found after trying all options")
-        return None
-    except Exception as e:
-        logger.error(f"Error getting download URL: {str(e)}", exc_info=True)
-        return None
+    if retry_count == max_retries:
+        logger.error(
+            f"All {max_retries} attempts to get download URL failed. Last error: {last_error}"
+        )
+    return None
 
 
 async def get_stream_url(api_url: str) -> Optional[str]:
     """
-    Get the actual stream URL from a SoundCloud API URL.
+    Get the actual stream URL from a SoundCloud API URL with retries.
 
     Args:
         api_url: The SoundCloud API URL
@@ -1411,40 +1613,49 @@ async def get_stream_url(api_url: str) -> Optional[str]:
         logger.error("Empty API URL provided to get_stream_url")
         return None
 
-    try:
-        logger.info(f"Getting stream URL from: {api_url}")
-        async with aiohttp.ClientSession() as session:
-            params = {
-                "client_id": CLIENT_ID,
-            }
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            logger.info(
+                f"Getting stream URL from: {api_url} (attempt {attempt + 1}/{max_retries})"
+            )
+            async with aiohttp.ClientSession() as session:
+                params = {"client_id": await get_cached_client_id()}
+                async with session.get(api_url, params=params) as response:
+                    status = response.status
+                    logger.info(f"Stream URL API response status: {status}")
 
-            logger.debug(f"Request params: {params}")
-            async with session.get(api_url, params=params) as response:
-                status = response.status
-                logger.info(f"Stream URL API response status: {status}")
-
-                if status == 200:
-                    try:
+                    if status == 200:
                         data = await response.json()
                         if "url" in data:
-                            logger.info("Stream URL found in response")
-                            return data["url"]
+                            stream_url = data["url"]
+                            # Validate the stream URL
+                            async with session.head(stream_url) as validate_response:
+                                if validate_response.status == 200:
+                                    logger.info("Stream URL found and validated")
+                                    return stream_url
+                                elif validate_response.status in (401, 403):
+                                    logger.warning(
+                                        "Stream URL validation failed, refreshing client ID..."
+                                    )
+                                    await refresh_client_id()
+                                    continue
                         else:
                             logger.error("No 'url' field in response data")
                             if DEBUG_DOWNLOAD:
                                 logger.debug(f"Response data keys: {list(data.keys())}")
-                            return None
-                    except Exception as json_error:
-                        logger.error(f"Error parsing JSON response: {json_error}")
-                        text = await response.text()
-                        logger.debug(f"Response text: {text[:200]}")
-                        return None
-                else:
-                    error_text = await response.text()
-                    logger.error(
-                        f"Failed to get stream URL. Status: {status}, Response: {error_text[:200]}"
-                    )
-                    return None
-    except Exception as e:
-        logger.error(f"Error getting stream URL: {e}")
-        return None
+                    elif status in (401, 403):
+                        logger.warning(f"Got {status} error, refreshing client ID...")
+                        await refresh_client_id()
+                        continue
+                    else:
+                        error_text = await response.text()
+                        logger.error(
+                            f"Failed to get stream URL. Status: {status}, Response: {error_text[:200]}"
+                        )
+
+        except Exception as e:
+            logger.error(f"Error getting stream URL: {e}")
+
+    logger.error(f"All {max_retries} attempts to get stream URL failed")
+    return None

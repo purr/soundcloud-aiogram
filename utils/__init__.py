@@ -1,3 +1,4 @@
+from .client_id import get_client_id, refresh_client_id
 from .formatting import (
     format_error_caption,
     format_success_caption,
@@ -18,4 +19,6 @@ __all__ = [
     "process_soundcloud_url",
     "SOUNDCLOUD_URL_PATTERN",
     "get_high_quality_artwork_url",
+    "get_client_id",
+    "refresh_client_id",
 ]

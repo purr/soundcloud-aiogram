@@ -24,6 +24,7 @@ from aiogram.client.default import DefaultBotProperties
 
 from utils import (
     SOUNDCLOUD_URL_PATTERN,
+    refresh_client_id,
     format_error_caption,
     extract_soundcloud_url,
     format_success_caption,
@@ -2013,6 +2014,11 @@ async def main():
     # Get bot info and log it
     bot_info = await bot.get_me()
     logger.info(f"{bot_info.full_name} @{bot_info.username} ({bot_info.id})")
+
+    # Get a fresh client ID at startup
+    logger.info("Getting fresh SoundCloud client ID...")
+    await refresh_client_id()
+    logger.info("Successfully obtained fresh client ID")
 
     # Start the download queue worker
     asyncio.create_task(process_download_queue())

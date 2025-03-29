@@ -8,9 +8,6 @@ load_dotenv()
 # Bot token - retrieved from environment variables
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
-# SoundCloud client ID - retrieved from environment variables
-CLIENT_ID = os.getenv("CLIENT_ID", "")
-
 # SoundCloud API URL - Changed to the working URL format for the API v2
 SOUNDCLOUD_SEARCH_API = "https://api-v2.soundcloud.com/search/tracks"
 SOUNDCLOUD_TRACK_API = "https://api-v2.soundcloud.com/tracks"
@@ -43,4 +40,4 @@ MAX_PLAYLIST_TRACKS_TO_SHOW = 50  # Maximum number of tracks to display from a p
 SOUNDCLOUD_LOGO_URL = "https://d21buns5ku92am.cloudfront.net/26628/images/419679-1x1_SoundCloudLogo_cloudmark-f5912b-original-1645807040.jpg"
 
 # Version
-VERSION = "0.7.94"
+VERSION = "0.8.0"
