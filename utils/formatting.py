@@ -28,6 +28,30 @@ def get_high_quality_artwork_url(artwork_url: str) -> str:
         return artwork_url.replace("-large", "-t1080x1080")
 
 
+def get_low_quality_artwork_url(artwork_url: str) -> str:
+    """Convert a SoundCloud artwork URL to its highest quality version.
+
+    Args:
+        artwork_url: Original SoundCloud artwork URL
+
+    Returns:
+        str: Low quality artwork URL
+    """
+    if not artwork_url or artwork_url == "":
+        return artwork_url
+
+    # Handle two different URL formats:
+    # 1. URLs ending with -large.jpg (older format)
+    # 2. URLs with -large in the middle (newer format)
+    if "t1080x1080" in artwork_url:
+        return artwork_url.replace("t1080x1080", "large")
+    else:
+        if "t500x500" in artwork_url:
+            return artwork_url.replace("t500x500", "large")
+        else:
+            return artwork_url.replace("-t1080x1080", "-large")
+
+
 def format_track_info_caption(track_info: Dict, bot_username: str) -> str:
     """Format a caption for a track with all necessary info.
 

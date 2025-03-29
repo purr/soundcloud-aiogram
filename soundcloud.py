@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 import aiohttp
 import mutagen
 import aiofiles
-from mutagen.id3 import ID3, APIC
+from mutagen.id3 import ID3
 
 from utils import get_high_quality_artwork_url
 from config import (
@@ -304,139 +304,6 @@ async def resolve_url(url: str) -> dict:
         return {}
 
 
-async def get_download_url(track_data: dict) -> Optional[str]:
-    """
-    Get best quality download URL for a track
-
-    Args:
-        track_data: Track data from SoundCloud API
-
-    Returns:
-        str or None: Download URL
-    """
-    logger.info(f"Getting download URL for track: {track_data.get('title', 'Unknown')}")
-
-    try:
-        # Check if track is downloadable and use direct download if available
-        if track_data.get("downloadable", False) and track_data.get("download_url"):
-            download_url = track_data["download_url"]
-            logger.info("Track is downloadable, using direct download URL")
-
-            # Add client_id to download_url
-            if "?" in download_url:
-                download_url += f"&client_id={CLIENT_ID}"
-            else:
-                download_url += f"?client_id={CLIENT_ID}"
-
-            return download_url
-
-        # If not directly downloadable, get the streaming URL
-        # Find the best quality stream
-        logger.info("Track not directly downloadable, finding best quality stream")
-
-        transcodings = []
-        if "media" in track_data and "transcodings" in track_data["media"]:
-            transcodings = track_data["media"]["transcodings"]
-            logger.info(f"Found {len(transcodings)} transcodings")
-        else:
-            logger.error("No media/transcodings found in track data")
-            if DEBUG_DOWNLOAD:
-                logger.debug(f"Track data keys: {list(track_data.keys())}")
-                if "media" in track_data:
-                    logger.debug(f"Media keys: {list(track_data['media'].keys())}")
-
-        if not transcodings:
-            logger.error("No transcodings found for track")
-            return None
-
-        # Find the highest quality progressive download
-        for i, encoding in enumerate(transcodings):
-            if DEBUG_DOWNLOAD:
-                logger.debug(f"Transcoding {i}: {encoding}")
-
-            if encoding.get("format", {}).get("protocol") == "progressive":
-                preset = encoding.get("preset", "unknown")
-                logger.info(f"Found progressive stream: {preset}")
-                stream_url = await get_stream_url(encoding.get("url"))
-                if stream_url:
-                    logger.info(f"Got stream URL for progressive encoding: {preset}")
-                    return stream_url
-                logger.warning(
-                    f"Failed to get stream URL for progressive encoding: {preset}"
-                )
-
-        # If no progressive download, use the highest quality HLS
-        logger.info("No progressive stream found, trying HLS")
-        for i, encoding in enumerate(transcodings):
-            if encoding.get("format", {}).get("protocol") == "hls":
-                preset = encoding.get("preset", "unknown")
-                logger.info(f"Found HLS stream: {preset}")
-                stream_url = await get_stream_url(encoding.get("url"))
-                if stream_url:
-                    logger.info(f"Got stream URL for HLS encoding: {preset}")
-                    return stream_url
-                logger.warning(f"Failed to get stream URL for HLS encoding: {preset}")
-
-        logger.error("No suitable streams found")
-        return None
-    except Exception as e:
-        logger.error(f"Error getting download URL: {str(e)}")
-        return None
-
-
-async def get_stream_url(api_url: str) -> Optional[str]:
-    """
-    Get the actual stream URL from a SoundCloud API URL.
-
-    Args:
-        api_url: The SoundCloud API URL
-
-    Returns:
-        str or None: The actual stream URL or None if it couldn't be retrieved
-    """
-    if not api_url:
-        logger.error("Empty API URL provided to get_stream_url")
-        return None
-
-    try:
-        logger.info(f"Getting stream URL from: {api_url}")
-        async with aiohttp.ClientSession() as session:
-            params = {
-                "client_id": CLIENT_ID,
-            }
-
-            logger.debug(f"Request params: {params}")
-            async with session.get(api_url, params=params) as response:
-                status = response.status
-                logger.info(f"Stream URL API response status: {status}")
-
-                if status == 200:
-                    try:
-                        data = await response.json()
-                        if "url" in data:
-                            logger.info("Stream URL found in response")
-                            return data["url"]
-                        else:
-                            logger.error("No 'url' field in response data")
-                            if DEBUG_DOWNLOAD:
-                                logger.debug(f"Response data keys: {list(data.keys())}")
-                            return None
-                    except Exception as json_error:
-                        logger.error(f"Error parsing JSON response: {json_error}")
-                        text = await response.text()
-                        logger.debug(f"Response text: {text[:200]}")
-                        return None
-                else:
-                    error_text = await response.text()
-                    logger.error(
-                        f"Failed to get stream URL. Status: {status}, Response: {error_text[:200]}"
-                    )
-                    return None
-    except Exception as e:
-        logger.error(f"Error getting stream URL: {e}")
-        return None
-
-
 async def download_audio(url: str, filepath: str) -> bool:
     """
     Download audio file from URL
@@ -449,6 +316,14 @@ async def download_audio(url: str, filepath: str) -> bool:
         bool: True if download was successful
     """
     logger.info(f"Downloading audio from URL to {filepath}")
+
+    # Check if URL appears to be an HLS stream (contains m3u8)
+    is_hls = "m3u8" in url.lower()
+    if is_hls:
+        logger.info("Detected HLS stream (m3u8), will use special handling")
+        return await download_hls_audio(url, filepath)
+
+    # Standard download for progressive streams and direct downloads
     try:
         async with aiohttp.ClientSession() as session:
             if DEBUG_DOWNLOAD:
@@ -460,14 +335,26 @@ async def download_audio(url: str, filepath: str) -> bool:
 
                 if status == 200:
                     content_length = int(response.headers.get("Content-Length", 0))
-                    logger.info(f"File size: {content_length / 1024 / 1024:.2f} MB")
+                    content_type = response.headers.get("Content-Type", "unknown")
+                    logger.info(
+                        f"File size: {content_length / 1024 / 1024:.2f} MB, Content-Type: {content_type}"
+                    )
 
                     if DEBUG_DOWNLOAD:
                         headers = dict(response.headers)
-                        logger.debug(
-                            f"Content-Type: {headers.get('Content-Type', 'unknown')}"
-                        )
                         logger.debug(f"Full response headers: {headers}")
+
+                    # Check if we might have received an m3u8 playlist despite not detecting it in the URL
+                    if content_length < 1000 and (
+                        content_type.startswith("application/")
+                        or content_type.startswith("text/")
+                    ):
+                        content = await response.text()
+                        if "#EXTM3U" in content or ".m3u8" in content:
+                            logger.info(
+                                "Detected HLS stream from response content, will use special handling"
+                            )
+                            return await download_hls_audio(url, filepath)
 
                     # Create directory if it doesn't exist
                     os.makedirs(os.path.dirname(filepath), exist_ok=True)
@@ -514,6 +401,13 @@ async def download_audio(url: str, filepath: str) -> bool:
                         )
                         logger.debug(f"Average download speed: {avg_speed:.1f} KB/s")
 
+                    # Validate the downloaded file
+                    if os.path.getsize(filepath) < 1000:  # Less than 1 KB
+                        logger.error(
+                            f"Downloaded file is too small: {os.path.getsize(filepath)} bytes"
+                        )
+                        return False
+
                     return True
                 else:
                     error_text = await response.text()
@@ -522,7 +416,124 @@ async def download_audio(url: str, filepath: str) -> bool:
                     )
                     return False
     except Exception as e:
-        logger.error(f"Exception during download: {type(e).__name__}: {e}")
+        logger.error(
+            f"Exception during download: {type(e).__name__}: {e}", exc_info=True
+        )
+        return False
+
+
+async def download_hls_audio(url: str, filepath: str) -> bool:
+    """
+    Download audio from HLS stream (m3u8)
+
+    Args:
+        url: HLS stream URL
+        filepath: Path to save the file
+
+    Returns:
+        bool: True if download was successful
+    """
+    logger.info(f"Starting HLS download from {url}")
+    try:
+        # Create temporary directory for segments
+        import shutil
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_output = os.path.join(temp_dir, "output.mp3")
+
+            # We'll use FFmpeg to download and process the HLS stream
+            # FFmpeg can handle HLS streams and convert them to MP3
+            ffmpeg_path = shutil.which("ffmpeg")
+            if not ffmpeg_path:
+                logger.error("FFmpeg not found, required for HLS downloads")
+                # Fallback to regular download method
+                logger.info("Falling back to regular download method")
+                return await download_audio_fallback(url, filepath)
+
+            # Build the FFmpeg command
+            cmd = [
+                ffmpeg_path,
+                "-y",  # Overwrite output files
+                "-loglevel",
+                "warning",  # Reduce log output
+                "-i",
+                url,  # Input URL
+                "-c:a",
+                "libmp3lame",  # MP3 codec
+                "-q:a",
+                "0",  # Highest quality
+                "-vn",  # No video
+                temp_output,
+            ]
+
+            logger.info(f"Running FFmpeg command: {' '.join(cmd)}")
+            process = await asyncio.create_subprocess_exec(
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+
+            stdout, stderr = await process.communicate()
+
+            if process.returncode != 0:
+                logger.error(f"FFmpeg error: {stderr.decode()}")
+                return await download_audio_fallback(url, filepath)
+
+            # Ensure output directory exists
+            os.makedirs(os.path.dirname(filepath), exist_ok=True)
+
+            # Move the file to the final destination
+            shutil.copy2(temp_output, filepath)
+
+            logger.info(f"HLS download completed: {filepath}")
+            return True
+    except Exception as e:
+        logger.error(
+            f"Exception during HLS download: {type(e).__name__}: {e}", exc_info=True
+        )
+        # Try fallback method
+        return await download_audio_fallback(url, filepath)
+
+
+async def download_audio_fallback(url: str, filepath: str) -> bool:
+    """
+    Fallback method for downloading audio when other methods fail
+
+    Args:
+        url: Audio URL
+        filepath: Path to save the file
+
+    Returns:
+        bool: True if download was successful
+    """
+    logger.info(f"Using fallback download method for {url}")
+    try:
+        import requests
+
+        # Try to use requests library for direct download
+        # This is synchronous but might work better for some URLs
+        r = requests.get(url, stream=True, timeout=30)
+        r.raise_for_status()
+
+        # Create directory if it doesn't exist
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+
+        # Write file in chunks
+        with open(filepath, "wb") as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                f.write(chunk)
+
+        logger.info(f"Fallback download completed: {filepath}")
+
+        # Validate the downloaded file
+        if os.path.getsize(filepath) < 1000:  # Less than 1 KB
+            logger.error(
+                f"Downloaded file is too small: {os.path.getsize(filepath)} bytes"
+            )
+            return False
+
+        return True
+    except Exception as e:
+        logger.error(f"Fallback download failed: {type(e).__name__}: {e}")
         return False
 
 
@@ -567,7 +578,7 @@ def extract_artist_title(title: str) -> Tuple[str, str]:
         tuple: (artist, title)
     """
     # Common delimiters in titles
-    delimiters = [" - ", " — ", " – ", " – ", "//", "\\\\", " by "]
+    delimiters = [" - ", " — ", " – ", " – "]
 
     for delimiter in delimiters:
         if delimiter in title:
@@ -583,16 +594,13 @@ def extract_artist_title(title: str) -> Tuple[str, str]:
     return None, title
 
 
-async def add_id3_tags(
-    filepath: str, track_data: dict, artwork_path: Optional[str] = None
-) -> None:
+async def add_id3_tags(filepath: str, track_data: dict) -> None:
     """
     Add ID3 tags to the downloaded audio file
 
     Args:
         filepath: Path to the audio file
         track_data: Track data from SoundCloud API
-        artwork_path: Path to the downloaded artwork image
     """
     logger.info(f"Adding ID3 tags to {filepath}")
     try:
@@ -670,54 +678,9 @@ async def add_id3_tags(
             except Exception as e:
                 logger.warning(f"Could not add description as comment: {e}")
 
-        # Add artwork if available
-        if artwork_path and os.path.exists(artwork_path):
-            try:
-                id3 = ID3(filepath)
-                with open(artwork_path, "rb") as album_art:
-                    id3.add(
-                        APIC(
-                            encoding=3,  # UTF-8
-                            mime="image/jpeg",
-                            type=3,  # Cover front
-                            desc="Cover",
-                            data=album_art.read(),
-                        )
-                    )
-                id3.save()
-                logger.info(f"Added artwork to {filepath}")
-            except Exception as e:
-                logger.error(f"Error adding artwork to {filepath}: {e}")
-
         logger.info(f"ID3 tags added to {filepath}")
     except Exception as e:
         logger.error(f"Error adding ID3 tags to {filepath}: {e}")
-
-
-async def calculate_file_size(url: str) -> Optional[int]:
-    """
-    Calculate file size before downloading
-
-    Args:
-        url: URL to check
-
-    Returns:
-        int or None: File size in bytes or None if couldn't be determined
-    """
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.head(url) as response:
-                if response.status == 200:
-                    content_length = response.headers.get("Content-Length")
-                    if content_length:
-                        return int(content_length)
-                logger.info(
-                    f"Couldn't determine file size from headers: {response.headers}"
-                )
-                return None
-    except Exception as e:
-        logger.error(f"Error checking file size: {e}")
-        return None
 
 
 async def download_track(track_id: str, bot_user: Dict[str, Any]) -> Dict[str, Any]:
@@ -761,9 +724,8 @@ async def download_track(track_id: str, bot_user: Dict[str, Any]) -> Dict[str, A
     if DEBUG_DOWNLOAD:
         logger.debug(f"Generated filename: {safe_filename}")
 
-    # Define file paths
+    # Define file path
     filepath = os.path.join(DOWNLOAD_PATH, f"{safe_filename}.mp3")
-    artwork_path = os.path.join(DOWNLOAD_PATH, f"{safe_filename}.jpg")
 
     # Check if file already exists
     if os.path.exists(filepath):
@@ -772,10 +734,17 @@ async def download_track(track_id: str, bot_user: Dict[str, Any]) -> Dict[str, A
         logger.info(
             f"File already exists: {filepath} ({file_size:.2f} MB, modified: {time.ctime(mod_time)})"
         )
+
+        # Get high-quality artwork URL for Telegram
+        artwork_url = track_data.get("artwork_url", "")
+        if artwork_url:
+            artwork_url = get_high_quality_artwork_url(artwork_url)
+            logger.info(f"Using high-quality artwork URL: {artwork_url}")
+
         return {
             "success": True,
             "filepath": filepath,
-            "artwork_path": artwork_path if os.path.exists(artwork_path) else None,
+            "artwork_url": artwork_url,
             "track_data": track_data,
             "cached": True,
         }
@@ -803,12 +772,15 @@ async def download_track(track_id: str, bot_user: Dict[str, Any]) -> Dict[str, A
             "message": "Failed to download audio file",
         }
 
-    # Download artwork if available
-    logger.info("Artwork URL: " + track_data["artwork_url"])
+    # Get artwork URL for Telegram
+    artwork_url = track_data.get("artwork_url", "")
+    if artwork_url:
+        artwork_url = get_high_quality_artwork_url(artwork_url)
+        logger.info(f"Using high-quality artwork URL: {artwork_url}")
 
     # Add metadata
     metadata_start = time.time()
-    await add_id3_tags(filepath, track_data, artwork_path)
+    await add_id3_tags(filepath, track_data)
     if DEBUG_DOWNLOAD:
         metadata_time = time.time() - metadata_start
         logger.debug(f"Metadata tagging completed in {metadata_time:.2f} seconds")
@@ -822,7 +794,7 @@ async def download_track(track_id: str, bot_user: Dict[str, Any]) -> Dict[str, A
         "filepath": filepath,
         "message": "Track downloaded successfully",
         "track_data": track_data,
-        "artwork_path": artwork_path,
+        "artwork_url": artwork_url,
     }
 
 
@@ -913,23 +885,14 @@ def get_track_info(track: dict) -> dict:
     # Determine artist name from available sources
     artist = publisher_metadata.get("artist") or username
 
-    # Get artwork URL and ensure it's properly formatted
     artwork_url = track.get("artwork_url", "")
 
-    # Log the artwork URL for debugging
-    logger.info(f"Original artwork_url: {artwork_url}")
-
-    # If no artwork_url found, try to get it from user avatar
     if artwork_url == "" or not artwork_url:
         avatar_url = track.get("user", {}).get("avatar_url", "")
-        logger.info(f"Using avatar_url as fallback: {avatar_url}")
         artwork_url = avatar_url
 
-    # Ensure we have a valid artwork URL
     if artwork_url:
-        # Convert to high quality version
         artwork_url = get_high_quality_artwork_url(artwork_url)
-        logger.info(f"Final high quality artwork_url: {artwork_url}")
 
     # Check if it's a Go+ song
     is_go_plus = track.get("policy") == "SNIP"
@@ -1092,13 +1055,12 @@ async def extract_track_id_from_url(url: str) -> Union[str, Dict[str, Any]]:
         return None
 
 
-async def cleanup_files(filepath: str, artwork_path: Optional[str] = None) -> None:
+async def cleanup_files(filepath: str) -> None:
     """
     Delete downloaded files after they've been sent to Telegram
 
     Args:
         filepath: Path to the audio file
-        artwork_path: Path to the artwork file
     """
     logger.info(f"Cleaning up temporary files: {filepath}")
 
@@ -1110,10 +1072,219 @@ async def cleanup_files(filepath: str, artwork_path: Optional[str] = None) -> No
         except Exception as e:
             logger.error(f"Error deleting audio file {filepath}: {e}")
 
-    # Delete artwork file
-    if artwork_path and os.path.exists(artwork_path):
-        try:
-            os.remove(artwork_path)
-            logger.info(f"Deleted artwork file: {artwork_path}")
-        except Exception as e:
-            logger.error(f"Error deleting artwork file {artwork_path}: {e}")
+
+async def get_download_url(track_data: dict) -> Optional[str]:
+    """
+    Get best quality download URL for a track
+
+    Args:
+        track_data: Track data from SoundCloud API
+
+    Returns:
+        str or None: Download URL
+    """
+    logger.info(f"Getting download URL for track: {track_data.get('title', 'Unknown')}")
+
+    try:
+        # Check if track is downloadable directly (usually free downloads provided by creators)
+        if track_data.get("downloadable", False):
+            logger.info("Track is marked as downloadable, checking download URL")
+
+            # Some tracks are marked as downloadable but don't have a download_url
+            # In this case, we need to construct it manually
+            if "download_url" in track_data and track_data["download_url"]:
+                download_url = track_data["download_url"]
+                logger.info("Using provided download_url from track data")
+            else:
+                # Construct download URL manually using the track ID
+                track_id = track_data.get("id")
+                download_url = (
+                    f"https://api-v2.soundcloud.com/tracks/{track_id}/download"
+                )
+                logger.info("Constructed download URL manually using track ID")
+
+            # Add client_id to download_url
+            if "?" in download_url:
+                download_url += f"&client_id={CLIENT_ID}"
+            else:
+                download_url += f"?client_id={CLIENT_ID}"
+
+            return download_url
+
+        # If not directly downloadable, get the streaming URL
+        # Find the best quality stream
+        logger.info("Track not directly downloadable, finding best quality stream")
+
+        transcodings = []
+        if "media" in track_data and "transcodings" in track_data["media"]:
+            transcodings = track_data["media"]["transcodings"]
+            logger.info(f"Found {len(transcodings)} transcodings")
+        else:
+            logger.error("No media/transcodings found in track data")
+            if DEBUG_DOWNLOAD:
+                logger.debug(f"Track data keys: {list(track_data.keys())}")
+                if "media" in track_data:
+                    logger.debug(f"Media keys: {list(track_data['media'].keys())}")
+
+        if not transcodings:
+            logger.error("No transcodings found for track")
+            return None
+
+        # Create a quality score mapping for different formats and protocols
+        # Higher score means better quality
+        quality_scores = {
+            # Progressive streams (usually better for downloading)
+            "progressive": {
+                "mp3_0": 60,  # MP3 standard quality
+                "mp3_1": 70,  # MP3 high quality
+                "mp3_2": 80,  # MP3 highest quality
+                "opus_0": 75,  # Opus standard quality
+                "opus_1": 85,  # Opus high quality
+                "aac_0": 65,  # AAC standard quality
+                "aac_1": 75,  # AAC high quality
+            },
+            # HLS streams
+            "hls": {
+                "mp3_0": 40,  # MP3 standard quality
+                "mp3_1": 50,  # MP3 high quality
+                "opus_0": 55,  # Opus standard quality
+                "opus_1": 65,  # Opus high quality
+                "aac_0": 45,  # AAC standard quality
+                "aac_1": 55,  # AAC high quality
+            },
+        }
+
+        # Score all available transcodings
+        scored_transcodings = []
+        for encoding in transcodings:
+            protocol = encoding.get("format", {}).get("protocol", "")
+            preset = encoding.get("preset", "")
+
+            # Extract format and quality level
+            format_match = None
+            if "_" in preset:
+                format_parts = preset.split("_")
+                if len(format_parts) >= 2:
+                    format_type = format_parts[0]  # e.g., "mp3", "opus", "aac"
+                    quality_level = "_".join(format_parts[1:])  # e.g., "0", "1", "0_0"
+
+                    # Simplify multi-part quality levels (e.g., "0_1" to "1")
+                    # We prefer the highest number in multi-part quality designations
+                    if "_" in quality_level:
+                        quality_parts = [
+                            int(q) for q in quality_level.split("_") if q.isdigit()
+                        ]
+                        simplified_quality = (
+                            str(max(quality_parts)) if quality_parts else "0"
+                        )
+                        format_match = f"{format_type}_{simplified_quality}"
+                    else:
+                        format_match = f"{format_type}_{quality_level}"
+
+            # Assign score based on protocol and format
+            score = 0
+            if protocol in quality_scores and format_match in quality_scores[protocol]:
+                score = quality_scores[protocol][format_match]
+            elif protocol == "progressive":
+                # Default score for progressive formats we don't explicitly know
+                score = 40
+            elif protocol == "hls":
+                # Default score for HLS formats we don't explicitly know
+                score = 30
+
+            # Add small bonus to higher numbers in preset (assuming higher = better quality)
+            # This helps differentiate between similar formats
+            if preset:
+                digits = [int(d) for d in preset if d.isdigit()]
+                if digits:
+                    score += min(sum(digits), 10)  # Max 10 point bonus
+
+            logger.info(f"Scored transcoding: {preset} ({protocol}) = {score}")
+            scored_transcodings.append(
+                {
+                    "encoding": encoding,
+                    "score": score,
+                    "protocol": protocol,
+                    "preset": preset,
+                }
+            )
+
+        # Sort by score in descending order (highest first)
+        scored_transcodings.sort(key=lambda x: x["score"], reverse=True)
+
+        # Try to get stream URL from each transcoding in order of score
+        for idx, item in enumerate(scored_transcodings):
+            encoding = item["encoding"]
+            score = item["score"]
+            protocol = item["protocol"]
+            preset = item["preset"]
+
+            logger.info(
+                f"Trying {idx + 1}/{len(scored_transcodings)}: {preset} ({protocol}) with score {score}"
+            )
+            stream_url = await get_stream_url(encoding.get("url"))
+
+            if stream_url:
+                logger.info(f"Successfully got stream URL for {preset} ({protocol})")
+                return stream_url
+
+            logger.warning(f"Failed to get stream URL for {preset} ({protocol})")
+
+        logger.error("No suitable streams found after trying all options")
+        return None
+    except Exception as e:
+        logger.error(f"Error getting download URL: {str(e)}", exc_info=True)
+        return None
+
+
+async def get_stream_url(api_url: str) -> Optional[str]:
+    """
+    Get the actual stream URL from a SoundCloud API URL.
+
+    Args:
+        api_url: The SoundCloud API URL
+
+    Returns:
+        str or None: The actual stream URL or None if it couldn't be retrieved
+    """
+    if not api_url:
+        logger.error("Empty API URL provided to get_stream_url")
+        return None
+
+    try:
+        logger.info(f"Getting stream URL from: {api_url}")
+        async with aiohttp.ClientSession() as session:
+            params = {
+                "client_id": CLIENT_ID,
+            }
+
+            logger.debug(f"Request params: {params}")
+            async with session.get(api_url, params=params) as response:
+                status = response.status
+                logger.info(f"Stream URL API response status: {status}")
+
+                if status == 200:
+                    try:
+                        data = await response.json()
+                        if "url" in data:
+                            logger.info("Stream URL found in response")
+                            return data["url"]
+                        else:
+                            logger.error("No 'url' field in response data")
+                            if DEBUG_DOWNLOAD:
+                                logger.debug(f"Response data keys: {list(data.keys())}")
+                            return None
+                    except Exception as json_error:
+                        logger.error(f"Error parsing JSON response: {json_error}")
+                        text = await response.text()
+                        logger.debug(f"Response text: {text[:200]}")
+                        return None
+                else:
+                    error_text = await response.text()
+                    logger.error(
+                        f"Failed to get stream URL. Status: {status}, Response: {error_text[:200]}"
+                    )
+                    return None
+    except Exception as e:
+        logger.error(f"Error getting stream URL: {e}")
+        return None

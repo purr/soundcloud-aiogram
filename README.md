@@ -72,6 +72,9 @@ Supported link formats:
 
 ## Version History
 
+- v0.7.93: Enhanced download system with improved HLS stream handling and advanced quality scoring for all audio streams
+- v0.7.92: Improved track download support for HLS-only tracks and direct downloadable tracks, removed local artwork download
+- v0.7.91: Fixed artwork download functionality to properly save and attach artwork to audio files
 - v0.7.83: Fixed critical bug where bot would incorrectly report DM access issues after successfully sending a file
 - v0.7.82: Simplified DM check logic to only attempt sending files directly
 - v0.7.81: Further improved DM detection by checking recent sent files history to prevent false "Chat Access Needed" messages
@@ -147,9 +150,6 @@ BOT_TOKEN=your_telegram_bot_token
 
 # SoundCloud API Client ID (required)
 CLIENT_ID=your_soundcloud_client_id
-
-# Optional configurations
-# DOWNLOAD_PATH=downloads
 ```
 
 Obtain your Telegram bot token from [BotFather](https://t.me/botfather).
@@ -157,6 +157,19 @@ Obtain your Telegram bot token from [BotFather](https://t.me/botfather).
 For the SoundCloud client ID, you'll need to use a valid client ID from the SoundCloud API.
 
 The bot will automatically load these variables from the `.env` file using `python-dotenv`.
+
+## BotFather Configuration
+
+After creating your bot with [BotFather](https://t.me/botfather), you need to configure these additional settings:
+
+1. **Enable Inline Mode**: Send `/mybots` to BotFather, select your bot, then select "Bot Settings" > "Inline Mode" > "Turn on"
+
+2. **Configure Inline Feedback**: Send `/mybots` to BotFather, select your bot, then select "Bot Settings" > "Inline Feedback" and set it to "100%"
+
+   - This is **crucial** for the bot to properly update audio results when selected
+   - Without 100% inline feedback, the bot won't be able to update the audio file after a user selects a track
+
+3. **Set Commands**: Consider setting up commands via BotFather's `/setcommands` to provide users with a helpful command menu
 
 ## Troubleshooting
 

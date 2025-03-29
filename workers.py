@@ -20,6 +20,7 @@ from utils import (
     get_high_quality_artwork_url,
 )
 from soundcloud import cleanup_files
+from utils.formatting import get_low_quality_artwork_url
 
 logger = logging.getLogger(__name__)
 
@@ -262,10 +263,7 @@ async def handle_system_error(
             logger.error(f"Final system error fallback failed: {e}")
     finally:
         if filepath:
-            artwork_path = None
-            if filepath.endswith(".mp3"):
-                artwork_path = filepath.replace(".mp3", ".jpg")
-            await cleanup_files(filepath, artwork_path)
+            await cleanup_files(filepath)
 
 
 async def send_audio_file(
@@ -292,10 +290,12 @@ async def send_audio_file(
         caption = format_track_info_caption(track_info, (await bot.get_me()).username)
         audio = FSInputFile(filepath)
 
-        # Get high quality artwork URL if available
+        # Get artwork URL if available
         artwork_url = track_info.get("artwork_url")
+
         if artwork_url:
-            artwork_url = get_high_quality_artwork_url(artwork_url)
+            # Use lower quality artwork for thumbnails to reduce bandwidth
+            artwork_url = get_low_quality_artwork_url(artwork_url)
             logger.info(f"Using artwork URL for audio message: {artwork_url}")
         else:
             logger.warning("No artwork URL found in track_info for audio message")

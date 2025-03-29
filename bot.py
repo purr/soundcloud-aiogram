@@ -11,7 +11,6 @@ from aiogram import F, Bot, Router, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.types import (
     Message,
-    FSInputFile,
     InlineQuery,
     CallbackQuery,
     ChosenInlineResult,
@@ -725,7 +724,6 @@ async def download_and_update_inline_message(
 
         # Store file paths for potential cleanup
         filepath = download_result.get("filepath")
-        artwork_path = download_result.get("artwork_path")
 
         # Flag to track if we need to clean up files
         should_cleanup = not download_result.get("cached", False)
@@ -752,24 +750,6 @@ async def download_and_update_inline_message(
                 )
                 logger.info(
                     f"Added missing artwork URL from track_data: {track_info['artwork_url']}"
-                )
-
-        # Double-check the artwork URL
-        if (
-            not track_info.get("artwork_url")
-            and artwork_path
-            and os.path.exists(artwork_path)
-        ):
-            logger.info(
-                f"Using local artwork path as indicator that artwork exists: {artwork_path}"
-            )
-            # Try to reconstruct the URL from track data if available
-            if download_result.get("track_data", {}).get("artwork_url"):
-                track_info["artwork_url"] = get_high_quality_artwork_url(
-                    download_result["track_data"]["artwork_url"]
-                )
-                logger.info(
-                    f"Reconstructed artwork URL from track_data: {track_info['artwork_url']}"
                 )
 
         logger.info(
@@ -944,7 +924,7 @@ async def download_and_update_inline_message(
         # Clean up files if needed (not cached or not needed anymore)
         if should_cleanup and filepath:
             try:
-                await cleanup_files(filepath, artwork_path)
+                await cleanup_files(filepath)
                 logger.info(f"Cleaned up files after processing: {filepath}")
             except Exception as cleanup_err:
                 logger.error(f"Error cleaning up files: {cleanup_err}")
@@ -1042,10 +1022,9 @@ async def handle_system_error(
     finally:
         # Clean up files if they exist
         if filepath:
-            artwork_path = None
-            if filepath.endswith(".mp3"):
-                artwork_path = filepath.replace(".mp3", ".jpg")
-            await cleanup_files(filepath, artwork_path)
+            await cleanup_files(
+                filepath,
+            )
 
 
 async def fallback_to_direct_message(
@@ -1127,10 +1106,9 @@ async def fallback_to_direct_message(
     finally:
         # Clean up any downloaded files
         if filepath:
-            artwork_path = None
-            if filepath.endswith(".mp3"):
-                artwork_path = filepath.replace(".mp3", ".jpg")
-            await cleanup_files(filepath, artwork_path)
+            await cleanup_files(
+                filepath,
+            )
 
 
 @router.callback_query(F.data == "download_status")
@@ -1196,7 +1174,6 @@ async def download_and_send(message: Message, track_id: str, spotify_url=None):
                 f"Download successful in {download_time:.2f} seconds: {download_result.get('filepath')}"
             )
             filepath = download_result["filepath"]
-            artwork_path = download_result.get("artwork_path")
 
             # Flag to track if we need to clean up files
             should_cleanup = not download_result.get("cached", False)
@@ -1221,7 +1198,9 @@ async def download_and_send(message: Message, track_id: str, spotify_url=None):
 
             # Clean up files if needed (not cached)
             if should_cleanup:
-                await cleanup_files(filepath, artwork_path)
+                await cleanup_files(
+                    filepath,
+                )
 
         else:
             # Download failed
@@ -1564,11 +1543,6 @@ async def download_callback(callback: CallbackQuery):
                 # Convert to high resolution
                 artwork_url = get_high_quality_artwork_url(artwork_url)
 
-            # Create minimalistic caption with hyperlinks
-            caption = format_track_info_caption(track_info, bot_info.username)
-
-            audio = FSInputFile(filepath)
-
             try:
 
                 await send_audio_file(
@@ -1578,33 +1552,6 @@ async def download_callback(callback: CallbackQuery):
                     track_info=track_info,
                     reply_to_message_id=original_message_id,
                 )
-
-                # await bot.send_audio(
-                #     chat_id=chat_id,
-                #     audio=audio,
-                #     caption=caption,
-                #     title=track_info["title"],
-                #     performer=track_info["artist"],
-                #     thumbnail=(FSInputFile(artwork_path) if artwork_path else None),
-                #     reply_to_message_id=original_message_id,
-                #     reply_markup=InlineKeyboardMarkup(
-                #         inline_keyboard=[
-                #             [
-                #                 InlineKeyboardButton(
-                #                     text="▶️ SoundCloud",
-                #                     url=track_info["permalink_url"],
-                #                 ),
-                #                 InlineKeyboardButton(
-                #                     text="👤 Artist",
-                #                     url=track_info["user"]["url"]
-                #                     or track_info["permalink_url"],
-                #                 ),
-                #             ]
-                #         ]
-                #     ),
-                #     disable_notification=True,  # Send silently
-                # )
-
             except Exception as e:
                 logger.error(f"Error sending audio: {e}")
 
