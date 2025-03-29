@@ -174,7 +174,7 @@ async def inline_search(query: InlineQuery):
                 InlineQueryResultArticle(
                     id="example1",
                     title="Search for SoundCloud tracks",
-                    description="Type your search query to find tracks",
+                    description="Type your search query to find tracks or paste a SoundCloud/Spotify link",
                     input_message_content=InputTextMessageContent(
                         message_text=f"How to use this bot:\n\n1. Type @{bot_info.username} followed by your search query\n2. Select a track from the results\n3. The track will be sent automatically"
                     ),

@@ -1,15 +1,19 @@
+import io
 import os
 import html
 import logging
 from typing import Any, Dict, Tuple, Optional
 
+import aiohttp
 import mutagen
+from PIL import Image
 from aiogram import Bot
 from aiogram.enums import ParseMode
 from aiogram.types import (
     FSInputFile,
     URLInputFile,
     InputMediaAudio,
+    BufferedInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
 )
@@ -266,6 +270,80 @@ async def handle_system_error(
             await cleanup_files(filepath)
 
 
+async def download_and_resize_image(
+    url: str, size: tuple[int, int] = (320, 320)
+) -> bytes:
+    """Download image from URL and resize it to specified dimensions.
+    Ensures the image meets Telegram's thumbnail requirements:
+    - JPEG format
+    - Less than 200 kB (with safety margin)
+    - Max dimensions 320x320 (with safety margin)
+    - Proper compression
+
+    Args:
+        url: Image URL to download
+        size: Target size as (width, height), defaults to (320, 320)
+
+    Returns:
+        bytes: Resized image in bytes that meets Telegram's requirements
+    """
+    logger.info(f"Starting image download and processing from URL: {url}")
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as response:
+            if response.status != 200:
+                logger.error(
+                    f"Failed to download image. Status code: {response.status}"
+                )
+                return None
+            image_data = await response.read()
+            logger.info(f"Downloaded image size: {len(image_data) / 1024:.1f} kB")
+
+    # Open image using PIL
+    try:
+        img = Image.open(io.BytesIO(image_data))
+        logger.info(f"Original image size: {img.size}, mode: {img.mode}")
+    except Exception as e:
+        logger.error(f"Failed to open image with PIL: {e}")
+        return None
+
+    # Convert RGBA to RGB if necessary
+    if img.mode == "RGBA":
+        img = img.convert("RGB")
+        logger.info("Converted RGBA image to RGB")
+
+    # Calculate aspect ratio preserving dimensions
+    width, height = img.size
+    if width > 320 or height > 320:
+        ratio = min(320 / width, 320 / height)
+        new_size = (int(width * ratio), int(height * ratio))
+        img = img.resize(new_size, Image.Resampling.LANCZOS)
+        logger.info(f"Resized image to: {new_size}")
+
+    # Save to bytes with progressive compression
+    img_byte_arr = io.BytesIO()
+    quality = 85
+    while True:
+        img_byte_arr.seek(0)
+        img_byte_arr.truncate()
+        img.save(
+            img_byte_arr,
+            format="JPEG",
+            quality=quality,
+            optimize=True,
+            progressive=True,
+        )
+        size_kb = img_byte_arr.tell() / 1024
+        logger.info(f"Compressed image size at quality {quality}: {size_kb:.1f} kB")
+
+        if size_kb <= 200 or quality <= 5:  # 200 kB limit for safety margin
+            logger.info(f"Final image quality: {quality}, size: {size_kb:.1f} kB")
+            break
+        quality -= 5
+
+    return img_byte_arr.getvalue()
+
+
 async def send_audio_file(
     bot: Bot,
     chat_id: int,
@@ -297,8 +375,23 @@ async def send_audio_file(
             # Use lower quality artwork for thumbnails to reduce bandwidth
             artwork_url = get_low_quality_artwork_url(artwork_url)
             logger.info(f"Using artwork URL for audio message: {artwork_url}")
+
+            # Download and resize image
+            try:
+                thumbnail_data = await download_and_resize_image(artwork_url)
+                if thumbnail_data:
+                    thumbnail = BufferedInputFile(
+                        thumbnail_data, filename="thumbnail.jpg"
+                    )
+                else:
+                    thumbnail = None
+                    logger.warning("Failed to download and resize artwork")
+            except Exception as e:
+                logger.error(f"Error processing artwork: {e}")
+                thumbnail = None
         else:
             logger.warning("No artwork URL found in track_info for audio message")
+            thumbnail = None
 
         logger.info("Sending audio with artwork thumbnail")
         return await bot.send_audio(
@@ -307,7 +400,7 @@ async def send_audio_file(
             caption=caption,
             title=track_info["title"],
             performer=track_info["artist"],
-            thumbnail=(URLInputFile(artwork_url) if artwork_url else None),
+            thumbnail=thumbnail,
             reply_to_message_id=reply_to_message_id,
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[
