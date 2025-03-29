@@ -602,7 +602,6 @@ def extract_artist_title(title: str) -> Tuple[str, str]:
         artist = artist_title[0].strip()
         new_title = artist_title[1].strip()
 
-        logger.info(f"Extracted artist '{artist}' from title: {title}")
         return artist, new_title
 
     # Fallback: try generic regex pattern for dash-like characters
@@ -610,7 +609,6 @@ def extract_artist_title(title: str) -> Tuple[str, str]:
     if match:
         artist = match.group(1).strip()
         new_title = match.group(2).strip()
-        logger.info(f"Extracted artist '{artist}' from title using regex: {title}")
         return artist, new_title
 
     # No artist found in title
@@ -650,14 +648,13 @@ async def add_id3_tags(filepath: str, track_data: dict) -> None:
             if extracted_artist:
                 # If we already have a publisher-provided artist, compare them
                 if artist != username and artist != extracted_artist:
-                    logger.info(
-                        f"Not using extracted artist '{extracted_artist}' because metadata artist '{artist}' is available"
-                    )
+                    pass  # Not using extracted artist '{extracted_artist}' because metadata artist '{artist}' is available
+
                 else:
                     # Use extracted artist and title
                     artist = extracted_artist
                     title = extracted_title
-                    logger.info(f"Using extracted artist: {artist}, new title: {title}")
+                    # "Using extracted artist: {artist}, new title: {title}
 
         # Create or clear existing tags
         audio = mutagen.File(filepath, easy=True)
@@ -761,14 +758,12 @@ async def download_track(track_id: str, bot_user: Dict[str, Any]) -> Dict[str, A
         if extracted_artist:
             # If we already have a publisher-provided artist, compare them
             if artist != username and artist != extracted_artist:
-                logger.info(
-                    f"Not using extracted artist '{extracted_artist}' because metadata artist '{artist}' is available"
-                )
+                pass  # Not using extracted artist '{extracted_artist}' because metadata artist '{artist}' is available
             else:
                 # Use extracted artist and title
                 artist = extracted_artist
                 title = extracted_title
-                logger.info(f"Using extracted artist: {artist}, new title: {title}")
+                # Using extracted artist: {artist}, new title: {title}
 
     if DEBUG_DOWNLOAD:
         logger.debug(f"Artist: {artist}, Title: {title}")
@@ -924,9 +919,18 @@ def get_track_info(track: dict) -> dict:
 
     # Extract user data, handling different response formats
     user = track.get("user", {})
+    user_id = None
+    user_urn = None
+
     if isinstance(user, dict):
         username = user.get("username", "Unknown Artist")
         user_url = user.get("permalink_url", "")
+        user_id = user.get("id")
+
+        # Extract or construct the user URN
+        user_urn = user.get("urn")
+        if not user_urn and user_id:
+            user_urn = f"soundcloud:users:{user_id}"
     else:
         logger.warning(f"Unexpected user data type: {type(user)}")
         username = "Unknown Artist"
@@ -950,16 +954,13 @@ def get_track_info(track: dict) -> dict:
         if extracted_artist:
             # If we have a publisher-provided artist, prefer it
             if publisher_metadata.get("artist"):
-                logger.debug(
-                    f"Keeping publisher artist '{artist}' over extracted '{extracted_artist}'"
-                )
+                # Keeping publisher artist '{artist}' over extracted '{extracted_artist}'
+                pass
             else:
                 # Use the extracted artist and title
                 artist = extracted_artist
                 title = extracted_title
-                logger.info(
-                    f"Updated artist to '{artist}' and title to '{title}' from original '{original_title}'"
-                )
+                # Updated artist to '{artist}' and title to '{title}' from original '{original_title}'
 
     # Get artwork URL
     artwork_url = track.get("artwork_url", "")
@@ -982,6 +983,11 @@ def get_track_info(track: dict) -> dict:
     # Format the full duration if available
     full_duration_formatted = format_duration(full_duration) if full_duration else None
 
+    # Get track URN
+    track_urn = track.get("urn")
+    if not track_urn and track.get("id"):
+        track_urn = f"soundcloud:tracks:{track.get('id')}"
+
     return {
         "id": track.get("id"),
         "title": title,
@@ -995,7 +1001,8 @@ def get_track_info(track: dict) -> dict:
         "genre": track.get("genre", ""),
         "plays": track.get("playback_count", 0),
         "likes": track.get("likes_count", 0),
-        "user": {"name": username, "url": user_url},
+        "user": {"name": username, "url": user_url, "id": user_id, "urn": user_urn},
+        "urn": track_urn,
         "is_go_plus": is_go_plus,
         "is_snipped": is_snipped,
         "policy": track.get("policy"),

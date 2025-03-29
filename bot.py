@@ -19,7 +19,7 @@ from aiogram.types import (
     InputTextMessageContent,
     InlineQueryResultArticle,
 )
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import CommandStart
 from aiogram.client.default import DefaultBotProperties
 
 from utils import (
@@ -127,47 +127,43 @@ async def cmd_start(message: Message):
     bot_username = bot_info.username
 
     await message.answer(
-        f"♫ <b>SoundCloud Search Bot v{VERSION}</b>\n"
-        f"Search for SoundCloud tracks inline by typing:\n"
-        f"<code>@{bot_username}</code> [search query]\n\n"
-        f"✨ <b>Features:</b>\n"
-        "• One-click track downloading from SoundCloud\n"
-        "• High quality audio with artwork\n"
-        "• Direct links to SoundCloud and artist pages\n"
-        "• Works in private chats and groups\n"
-        "• Clean, minimalist interface\n\n"
-        f"📎 <b>Direct link downloads:</b>\n"
-        "• Send any SoundCloud link to download instantly\n"
-        f"• Use @{bot_username} followed by a SoundCloud link in any chat\n\n"
-        "<i>Note: To enable inline downloads, message this bot directly first with /start</i>"
-    )
-
-
-@router.message(Command("help"))
-async def cmd_help(message: Message):
-    """Handler for /help command"""
-    # Get bot info for proper username display
-    bot_info = await bot.get_me()
-    bot_username = bot_info.username
-
-    await message.answer(
-        f"🔍 <b>How to use this bot:</b>\n\n"
-        f"1. Start typing @{bot_username} followed by your search query\n"
-        "2. Wait for search results to appear (about 0.5 seconds)\n"
-        "3. Select a track to get a downloadable audio file\n\n"
-        f"✨ <b>Features:</b>\n"
-        "• One-click track downloading from SoundCloud\n"
-        "• High quality audio with artwork\n"
-        "• Direct links to SoundCloud and artist pages\n"
-        "• Works in private chats and groups\n"
-        "• Clean, minimalist interface\n\n"
-        "<i>Important: To enable inline downloads, you must message this bot directly first.</i>\n\n"
-        f"📎 <b>Direct link downloads:</b>\n"
-        "• Send any SoundCloud link to download the track instantly\n"
-        f"• Use @{bot_username} followed by a SoundCloud link for immediate download\n\n"
-        "Available commands:\n"
-        "/start - Start the bot\n"
-        "/help - Show this help message"
+        f"𝄞⨾𓍢ִ໋ ♫⋆｡♪₊˚♬ <b>SoundCloud Search Bot v{VERSION}</b>\n\n"
+        f"⇩ <b>Download tracks from SoundCloud</b>\n"
+        f"𝄞 <b>Supports tracks, playlists and Spotify links</b>\n"
+        f"♫ <b>Use the bot inline to search/download anywhere</b>\n\n"
+        f"ⓘ <b>How to use:</b>\n"
+        f"• Inline search: <code>@{bot_username}</code> [search query]\n"
+        f"• Direct links: Send any SoundCloud or Spotify URL\n"
+        f"• Examples:\n"
+        f"  <code>@{bot_username} drain gang</code>\n"
+        f"  <code>@{bot_username} https://soundcloud.com/21olxa01gdby/somewhere</code>\n\n"
+        f"𖤍 <b>Features:</b>\n"
+        f"• One-click track downloading from SoundCloud\n"
+        f"• Highest quality audio with proper ID3 tags\n"
+        f"• Artist name extraction from track titles\n"
+        f"• Direct links to the track and cover art\n"
+        f"• Clean, minimalist interface\n\n"
+        f"❀ <b>Supported content:</b>\n"
+        f"• Search with words or links\n"
+        f"• SoundCloud tracks, playlists and albums\n"
+        f"• Spotify track links (converted to SoundCloud)\n\n"
+        f"❥ By @pinkiepie",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="🔍 Click here to start searching",
+                        switch_inline_query_current_chat="drain gang",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="🏷️ Edit ID3 Tags with @id3_robot",
+                        url="https://t.me/id3_robot?start=dlmus",
+                    ),
+                ],
+            ]
+        ),
     )
 
 
@@ -196,7 +192,12 @@ async def inline_search(query: InlineQuery):
 
     # Extract query text
     search_text = query.query.strip()
-    logger.info(f"Inline search query: {search_text}")
+    username = (
+        f"{query.from_user.first_name} {query.from_user.last_name if query.from_user.last_name else ''}"
+        f"@{query.from_user.username if query.from_user.username else ''} (id:{query.from_user.id})"
+    )
+
+    logger.info(f"Inline search query: {search_text} by {username}")
 
     # Check if this is a SoundCloud URL
     soundcloud_url = extract_soundcloud_url(search_text)
@@ -731,11 +732,6 @@ async def download_and_update_inline_message(
         # Track info for either success or failure cases
         track_info = get_track_info(download_result.get("track_data", {}))
 
-        # Log track info for debugging
-        logger.info(
-            f"Track info before modifications: artwork_url = {track_info.get('artwork_url', 'None')}"
-        )
-
         # Check if the search query was a Spotify URL and add it to track_info
         if search_query and search_query in inline_spotify_urls:
             track_info["spotify_url"] = inline_spotify_urls[search_query]
@@ -751,10 +747,6 @@ async def download_and_update_inline_message(
                 logger.info(
                     f"Added missing artwork URL from track_data: {track_info['artwork_url']}"
                 )
-
-        logger.info(
-            f"Final track info for audio update: artwork_url = {track_info.get('artwork_url', 'None')}"
-        )
 
         if download_result["success"]:
             # Track downloaded successfully - now validate it
@@ -2017,10 +2009,10 @@ async def main():
     """Main function to start the bot"""
     # Create necessary directories
     os.makedirs(DOWNLOAD_PATH, exist_ok=True)
-    os.makedirs(os.path.join(DOWNLOAD_PATH, "artwork"), exist_ok=True)
 
-    # We no longer initialize any caching functionality
-    # All types of caching are disabled in config.py
+    # Get bot info and log it
+    bot_info = await bot.get_me()
+    logger.info(f"{bot_info.full_name} @{bot_info.username} ({bot_info.id})")
 
     # Start the download queue worker
     asyncio.create_task(process_download_queue())

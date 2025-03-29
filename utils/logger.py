@@ -1,4 +1,3 @@
-import os
 import sys
 
 from loguru import logger
@@ -29,18 +28,6 @@ logger.add(
     colorize=True,
     backtrace=True,
     diagnose=True,
-)
-
-# Add a file handler if needed
-log_dir = "logs"
-os.makedirs(log_dir, exist_ok=True)
-logger.add(
-    os.path.join(log_dir, "bot.log"),
-    rotation="1 day",
-    retention="7 days",
-    compression="zip",
-    level="DEBUG" if DEBUG else "INFO",
-    format=format_string,
 )
 
 

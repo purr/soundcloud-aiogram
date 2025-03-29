@@ -300,60 +300,41 @@ async def send_audio_file(
         else:
             logger.warning("No artwork URL found in track_info for audio message")
 
-        # Create and send audio with thumbnail if artwork URL is available
-        if artwork_url:
-            logger.info("Sending audio with artwork thumbnail")
-            return await bot.send_audio(
-                chat_id=chat_id,
-                audio=audio,
-                caption=caption,
-                title=track_info["title"],
-                performer=track_info["artist"],
-                thumbnail=URLInputFile(artwork_url),
-                reply_to_message_id=reply_to_message_id,
-                reply_markup=InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [
-                            InlineKeyboardButton(
-                                text="▶️ SoundCloud",
-                                url=track_info["permalink_url"],
-                            ),
-                            InlineKeyboardButton(
-                                text="👤 Artist",
-                                url=track_info["user"]["url"]
-                                or track_info["permalink_url"],
-                            ),
-                        ]
-                    ]
-                ),
-                disable_notification=True,
-            )
-        else:
-            logger.info("Sending audio without artwork thumbnail")
-            return await bot.send_audio(
-                chat_id=chat_id,
-                audio=audio,
-                caption=caption,
-                title=track_info["title"],
-                performer=track_info["artist"],
-                reply_to_message_id=reply_to_message_id,
-                reply_markup=InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [
-                            InlineKeyboardButton(
-                                text="▶️ SoundCloud",
-                                url=track_info["permalink_url"],
-                            ),
-                            InlineKeyboardButton(
-                                text="👤 Artist",
-                                url=track_info["user"]["url"]
-                                or track_info["permalink_url"],
-                            ),
-                        ]
-                    ]
-                ),
-                disable_notification=True,
-            )
+        logger.info("Sending audio with artwork thumbnail")
+        return await bot.send_audio(
+            chat_id=chat_id,
+            audio=audio,
+            caption=caption,
+            title=track_info["title"],
+            performer=track_info["artist"],
+            thumbnail=(URLInputFile(artwork_url) if artwork_url else None),
+            reply_to_message_id=reply_to_message_id,
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="▶️ SoundCloud",
+                            url=track_info["permalink_url"],
+                        ),
+                        InlineKeyboardButton(
+                            text="👤 Artist",
+                            url=(
+                                track_info["user"]["url"] or track_info["permalink_url"]
+                            )
+                            + f"?urn={track_info['user']['urn']}",
+                        ),
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            text="🏷️ Edit ID3 Tags",
+                            url="https://t.me/id3_robot?start=dlmus",
+                        ),
+                    ],
+                ]
+            ),
+            disable_notification=True,
+        )
+
     except Exception as e:
         logger.error(f"Error sending audio: {e}")
         return False
@@ -398,13 +379,11 @@ async def update_inline_message_with_audio(
         )
 
         # Update the inline message with audio
-        await bot.edit_message_media(
-            inline_message_id=inline_message_id,
-            media=media,
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[]),
-        )
+        await bot.edit_message_media(inline_message_id=inline_message_id, media=media)
+
         logger.info("Successfully updated inline message with audio")
         return True
+
     except Exception as e:
         logger.error(f"Error updating inline message with file_id: {e}")
         return False

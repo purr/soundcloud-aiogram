@@ -35,7 +35,6 @@ def extract_soundcloud_url(text: str) -> Optional[str]:
         logger.info(f"Extracted SoundCloud URL: {url}")
         return url
 
-    logger.warning(f"No SoundCloud URL found in text: {text}")
     return None
 
 
