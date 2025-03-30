@@ -14,16 +14,19 @@ from mutagen.id3 import ID3, APIC
 
 from utils import get_high_quality_artwork_url
 from config import (
-    NAME_FORMAT,
     DEBUG_SEARCH,
     DOWNLOAD_PATH,
     DEBUG_DOWNLOAD,
+    DEBUG_EXTRACTIONS,
     SOUNDCLOUD_TRACK_API,
     SOUNDCLOUD_SEARCH_API,
     SOUNDCLOUD_RESOLVE_API,
 )
 from utils.logger import get_logger
 from utils.client_id import get_client_id
+
+# Version 1.3.0 - Never add artist to display titles or filenames, respecting user preferences
+
 
 # Configure logging
 logger = get_logger(__name__)
@@ -727,41 +730,186 @@ def extract_artist_title(title: str) -> Tuple[str, str]:
     Returns:
         tuple: (artist, title) or (None, title) if artist couldn't be extracted
     """
-    # List of dash characters used to separate artist and title
-    dash_separators = [" - ", " − ", " – ", " — ", " ― "]
+    if DEBUG_EXTRACTIONS:
+        logger.info(f"EXTRACT: Beginning extraction for title: '{title}'")
 
-    # Count occurrences of each dash separator
-    dash_counts = {sep: title.count(sep) for sep in dash_separators}
-    total_dashes = sum(dash_counts.values())
+    # Define dash characters to use
+    dash_chars = ["-", "−", "–", "—", "―"]
 
-    # If there's more than one dash (of any type), don't attempt extraction
-    # to avoid incorrect splits in complex titles
-    if total_dashes > 1:
-        logger.info(
-            f"Multiple dash separators found in title, skipping extraction: {title}"
+    # Create the three types of separators
+    dash_separators_both_spaces = [f" {dash} " for dash in dash_chars]
+    dash_separators_after_space = [f"{dash} " for dash in dash_chars]
+    dash_separators_before_space = [f" {dash}" for dash in dash_chars]
+
+    if DEBUG_EXTRACTIONS:
+        logger.debug(
+            f"EXTRACT: Using separators - both spaces: {dash_separators_both_spaces}"
         )
+
+    # Check for dashes with spaces on both sides
+    dash_counts = {sep: title.count(sep) for sep in dash_separators_both_spaces}
+    total_dashes_both_spaces = sum(dash_counts.values())
+
+    if DEBUG_EXTRACTIONS:
+        logger.debug(
+            f"EXTRACT: Found {total_dashes_both_spaces} separators with spaces on both sides"
+        )
+
+    if total_dashes_both_spaces == 1:
+        # Found exactly one dash with spaces on both sides, use it
+        for dash in dash_separators_both_spaces:
+            if dash in title:
+                artist_title = title.split(dash, maxsplit=1)
+                artist = artist_title[0].strip()
+                new_title = artist_title[1].strip()
+                if DEBUG_EXTRACTIONS:
+                    logger.info(
+                        f"EXTRACT: SUCCESS with spaces both sides - Artist: '{artist}', Title: '{new_title}'"
+                    )
+                return artist, new_title
+    elif total_dashes_both_spaces > 1:
+        # More than one dash with spaces on both sides, abort
+        if DEBUG_EXTRACTIONS:
+            logger.info(
+                "EXTRACT: ABORTED - Multiple separators with spaces on both sides"
+            )
         return None, title
 
-    # Try to split by each dash separator
-    for dash in dash_separators:
-        if dash not in title:
-            continue
+    # Step 2: Check for dashes with space after only (e.g. "- ")
+    if DEBUG_EXTRACTIONS:
+        logger.debug("EXTRACT: Checking separators with space after only")
 
-        artist_title = title.split(dash, maxsplit=1)
-        artist = artist_title[0].strip()
-        new_title = artist_title[1].strip()
+    dash_counts = {sep: title.count(sep) for sep in dash_separators_after_space}
+    total_dashes_after_space = sum(dash_counts.values())
 
-        return artist, new_title
+    if DEBUG_EXTRACTIONS:
+        logger.debug(
+            f"EXTRACT: Found {total_dashes_after_space} separators with space after only"
+        )
 
-    # Fallback: try generic regex pattern for dash-like characters
+    if total_dashes_after_space == 1:
+        # Found exactly one dash with space after, use it
+        for dash in dash_separators_after_space:
+            if dash in title:
+                artist_title = title.split(dash, maxsplit=1)
+                artist = artist_title[0].strip()
+                new_title = artist_title[1].strip()
+                if DEBUG_EXTRACTIONS:
+                    logger.info(
+                        f"EXTRACT: SUCCESS with space after - Artist: '{artist}', Title: '{new_title}'"
+                    )
+                return artist, new_title
+    elif total_dashes_after_space > 1:
+        # More than one dash with space after, abort
+        if DEBUG_EXTRACTIONS:
+            logger.info("EXTRACT: ABORTED - Multiple separators with space after only")
+        return None, title
+
+    # Step 3: Check for dashes with space before only (e.g. " -")
+    if DEBUG_EXTRACTIONS:
+        logger.debug("EXTRACT: Checking separators with space before only")
+
+    dash_counts = {sep: title.count(sep) for sep in dash_separators_before_space}
+    total_dashes_before_space = sum(dash_counts.values())
+
+    if DEBUG_EXTRACTIONS:
+        logger.debug(
+            f"EXTRACT: Found {total_dashes_before_space} separators with space before only"
+        )
+
+    if total_dashes_before_space == 1:
+        # Found exactly one dash with space before, use it
+        for dash in dash_separators_before_space:
+            if dash in title:
+                artist_title = title.split(dash, maxsplit=1)
+                artist = artist_title[0].strip()
+                new_title = artist_title[1].strip()
+                if DEBUG_EXTRACTIONS:
+                    logger.info(
+                        f"EXTRACT: SUCCESS with space before - Artist: '{artist}', Title: '{new_title}'"
+                    )
+                return artist, new_title
+    elif total_dashes_before_space > 1:
+        # More than one dash with space before, abort
+        if DEBUG_EXTRACTIONS:
+            logger.info("EXTRACT: ABORTED - Multiple separators with space before only")
+        return None, title
+
+    # Fallback: If no structured separators were found, try generic regex pattern
+    if DEBUG_EXTRACTIONS:
+        logger.debug("EXTRACT: Trying regex fallback")
+
     match = re.match(r"^(.+?)\s*[-–—]\s*(.+)$", title)
     if match:
         artist = match.group(1).strip()
         new_title = match.group(2).strip()
+        if DEBUG_EXTRACTIONS:
+            logger.info(
+                f"EXTRACT: SUCCESS with regex - Artist: '{artist}', Title: '{new_title}'"
+            )
         return artist, new_title
 
     # No artist found in title
+    if DEBUG_EXTRACTIONS:
+        logger.info(f"EXTRACT: NO ARTIST FOUND in title: '{title}'")
     return None, title
+
+
+def clean_title_if_contains_artist(title: str, artist: str) -> str:
+    """
+    Remove artist name from the title if it appears there
+
+    Args:
+        title: Track title
+        artist: Artist name to check for
+
+    Returns:
+        str: Cleaned title without artist name if found, original title otherwise
+    """
+    if not artist or not title or len(artist) < 2:
+        if DEBUG_EXTRACTIONS:
+            logger.debug("CLEAN: Skipping - missing artist or title")
+        return title
+
+    if DEBUG_EXTRACTIONS:
+        logger.info(f"CLEAN: Checking if title '{title}' contains artist '{artist}'")
+
+    # Define dash characters to use (same as in extract_artist_title)
+    dash_chars = ["-", "−", "–", "—", "―"]
+
+    # 1. Check if title starts with artist name
+    if title.lower().startswith(artist.lower()):
+        if DEBUG_EXTRACTIONS:
+            logger.debug("CLEAN: Title starts with artist name")
+        # Check if there's a dash or similar separator after the artist name
+        remainder = title[len(artist) :].strip()
+        if any(remainder.startswith(dash) for dash in dash_chars):
+            # Remove the dash and return cleaned title
+            for dash in dash_chars:
+                if remainder.startswith(dash):
+                    cleaned_title = remainder[len(dash) :].strip()
+                    if DEBUG_EXTRACTIONS:
+                        logger.info(
+                            f"CLEAN: SUCCESS - Removed artist from start: '{title}' -> '{cleaned_title}'"
+                        )
+                    return cleaned_title
+
+    # 2. Check for "artist - " pattern at the beginning of the title
+    for dash in dash_chars:
+        separator = f" {dash} "
+        prefix = f"{artist}{separator}"
+        if prefix.lower() in title.lower():
+            # Find the actual case-sensitive position
+            pos = title.lower().find(prefix.lower())
+            if pos == 0:  # Only remove if it's at the beginning
+                cleaned_title = title[len(prefix) :].strip()
+                if DEBUG_EXTRACTIONS:
+                    logger.info(
+                        f"CLEAN: SUCCESS - Removed artist with separator: '{title}' -> '{cleaned_title}'"
+                    )
+                return cleaned_title
+
+    return title
 
 
 async def download_artwork(artwork_url: str) -> Optional[bytes]:
@@ -813,34 +961,97 @@ async def add_id3_tags(filepath: str, track_data: dict) -> None:
     """
     logger.info(f"Adding ID3 tags to {filepath}")
     try:
-        # Get title
-        title = track_data.get("title", "Unknown")
-        logger.info(f"Original title: {title}")
+        # Check if we have extraction info from download_track
+        if "_extracted_info" in track_data:
+            # Use the pre-extracted and processed information
+            extracted_info = track_data["_extracted_info"]
+            artist = extracted_info["final_artist"]
+            title = extracted_info["final_title"]
 
-        # Get artist from different sources, prioritizing publisher_metadata
-        username = track_data.get("user", {}).get("username", "Unknown Artist")
-        artist = username  # Default to username
+            if DEBUG_EXTRACTIONS:
+                logger.info("ID3: Using pre-extracted info from download_track")
+                logger.info(f"ID3: Artist: '{artist}', Title: '{title}'")
 
-        # Try to get artist from publisher_metadata
-        if track_data.get("publisher_metadata") and track_data[
-            "publisher_metadata"
-        ].get("artist"):
-            artist = track_data["publisher_metadata"]["artist"]
-            logger.info(f"Using artist from publisher_metadata: {artist}")
+            logger.info(
+                f"Final values for ID3 tags - Artist: '{artist}', Title: '{title}'"
+            )
+        else:
+            # Get title
+            title = track_data.get("title", "Unknown")
+            logger.info(f"Original title: {title}")
 
-        extracted_artist, extracted_title = extract_artist_title(title)
+            # Get artist from different sources, prioritizing publisher_metadata
+            username = track_data.get("user", {}).get("username", "Unknown Artist")
+            artist = username  # Default to username
+            logger.debug(f"Initial artist value (from username): '{artist}'")
 
-        # Only use extracted artist if it was found and we don't already have a better source
-        if extracted_artist:
-            # If we already have a publisher-provided artist, compare them
-            if artist != username and artist != extracted_artist:
-                pass  # Not using extracted artist '{extracted_artist}' because metadata artist '{artist}' is available
+            # First attempt to extract artist and title from the original title
+            if DEBUG_EXTRACTIONS:
+                logger.info(f"ID3: Attempting extraction from title: '{title}'")
 
-            else:
-                # Use extracted artist and title
+            extracted_artist, extracted_title = extract_artist_title(title)
+
+            if DEBUG_EXTRACTIONS:
+                if extracted_artist:
+                    logger.info(
+                        f"ID3: Extraction successful - Artist: '{extracted_artist}', Title: '{extracted_title}'"
+                    )
+                else:
+                    logger.info("ID3: Extraction failed - No artist found")
+
+            # Try to get artist from publisher_metadata
+            has_metadata_artist = False
+            if track_data.get("publisher_metadata") and track_data[
+                "publisher_metadata"
+            ].get("artist"):
+                metadata_artist = track_data["publisher_metadata"]["artist"]
+                has_metadata_artist = True
+                logger.info(
+                    f"ID3: Found artist '{metadata_artist}' in publisher metadata"
+                )
+
+            # Now apply the results based on extraction success and metadata
+            # PRIORITIZE the extracted info
+            if extracted_artist:
+                # Always use extracted artist if available
+                if DEBUG_EXTRACTIONS:
+                    logger.info(
+                        f"ID3: Using extracted artist '{extracted_artist}' and title '{extracted_title}'"
+                    )
                 artist = extracted_artist
                 title = extracted_title
-                # "Using extracted artist: {artist}, new title: {title}
+            elif has_metadata_artist:
+                # If no extraction but we have metadata artist
+                artist = metadata_artist
+                if DEBUG_EXTRACTIONS:
+                    logger.info(
+                        f"ID3: Using metadata artist '{artist}', checking if title contains it"
+                    )
+
+                # Try to clean the title if it contains the artist
+                cleaned_title = clean_title_if_contains_artist(title, artist)
+                if cleaned_title != title:
+                    if DEBUG_EXTRACTIONS:
+                        logger.info(
+                            f"ID3: Title cleaned: '{title}' -> '{cleaned_title}'"
+                        )
+                    title = cleaned_title
+                else:
+                    if DEBUG_EXTRACTIONS:
+                        logger.info("ID3: Title unchanged after cleaning")
+            else:
+                # Fallback to username
+                if DEBUG_EXTRACTIONS:
+                    logger.info(
+                        "ID3: No extraction or metadata, keeping username as artist"
+                    )
+
+            if DEBUG_EXTRACTIONS:
+                logger.info(f"ID3: Final artist: '{artist}', Final title: '{title}'")
+
+            logger.info(
+                f"Final values for ID3 tags - Artist: '{artist}', Title: '{title}'"
+            )
 
         # Create or clear existing tags
         audio = mutagen.File(filepath, easy=True)
@@ -928,7 +1139,7 @@ async def add_id3_tags(filepath: str, track_data: dict) -> None:
         except Exception as e:
             logger.warning(f"Error adding ID3 specific tags: {e}")
 
-        logger.info(f"ID3 tags added to {filepath}: Title='{title}', Artist='{artist}'")
+        logger.info(f"ID3 tags successfully added to {filepath}")
     except Exception as e:
         logger.error(f"Error adding ID3 tags to {filepath}: {e}")
 
@@ -961,38 +1172,93 @@ async def download_track(track_id: str, bot_user: Dict[str, Any]) -> Dict[str, A
 
     # Original title
     original_title = track_data.get("title", "Unknown")
+    logger.info(f"Original track title: '{original_title}'")
 
     # Get artist and title with possible extraction
     title = original_title
     username = track_data.get("user", {}).get("username", "Unknown Artist")
     artist = username  # Default to username
+    logger.debug(f"Initial artist value (from username): '{artist}'")
+
+    # First, attempt to extract artist and title from the original title
+    if DEBUG_EXTRACTIONS:
+        logger.info(f"DOWNLOAD: Attempting extraction from title: '{original_title}'")
+
+    extracted_artist, extracted_title = extract_artist_title(original_title)
+
+    if DEBUG_EXTRACTIONS:
+        if extracted_artist:
+            logger.info(
+                f"DOWNLOAD: Extraction successful - Artist: '{extracted_artist}', Title: '{extracted_title}'"
+            )
+        else:
+            logger.info("DOWNLOAD: Extraction failed - No artist found")
 
     # Try to get artist from metadata
+    has_metadata_artist = False
     if track_data.get("publisher_metadata") and track_data["publisher_metadata"].get(
         "artist"
     ):
-        artist = track_data["publisher_metadata"]["artist"]
-        logger.info(f"Using artist '{artist}' from publisher metadata")
+        metadata_artist = track_data["publisher_metadata"]["artist"]
+        has_metadata_artist = True
+        logger.info(f"Found artist '{metadata_artist}' in publisher metadata")
 
-    extracted_artist, extracted_title = extract_artist_title(original_title)
+    # Now apply the results based on extraction success and metadata
+    # PRIORITIZE the extracted info
     if extracted_artist:
-        # If we already have a publisher-provided artist, compare them
-        if artist != username and artist != extracted_artist:
-            pass  # Not using extracted artist '{extracted_artist}' because metadata artist '{artist}' is available
+        # Always use extracted artist if available
+        if DEBUG_EXTRACTIONS:
+            logger.info(
+                f"DOWNLOAD: Using extracted artist '{extracted_artist}' and title '{extracted_title}'"
+            )
+        artist = extracted_artist
+        title = extracted_title
+    elif has_metadata_artist:
+        # If no extraction but we have metadata artist
+        artist = metadata_artist
+        if DEBUG_EXTRACTIONS:
+            logger.info(
+                f"DOWNLOAD: Using metadata artist '{artist}', checking if title contains it"
+            )
+
+        # Try to clean the title if it contains the artist
+        cleaned_title = clean_title_if_contains_artist(title, artist)
+        if cleaned_title != title:
+            if DEBUG_EXTRACTIONS:
+                logger.info(f"DOWNLOAD: Title cleaned: '{title}' -> '{cleaned_title}'")
+            title = cleaned_title
         else:
-            # Use extracted artist and title
-            artist = extracted_artist
-            title = extracted_title
-            # Using extracted artist: {artist}, new title: {title}
+            if DEBUG_EXTRACTIONS:
+                logger.info("DOWNLOAD: Title unchanged after cleaning")
+    else:
+        # Fallback to username
+        if DEBUG_EXTRACTIONS:
+            logger.info(
+                "DOWNLOAD: No extraction or metadata, keeping username as artist"
+            )
+
+    if DEBUG_EXTRACTIONS:
+        logger.info(f"DOWNLOAD: Final artist: '{artist}', Final title: '{title}'")
+
+    logger.info(f"Final values for filename - Artist: '{artist}', Title: '{title}'")
 
     if DEBUG_DOWNLOAD:
         logger.debug(f"Artist: {artist}, Title: {title}")
 
-    # Generate safe filename (no special characters)
-    filename = NAME_FORMAT.format(artist=artist, title=title)
-    safe_filename = sanitize_filename(filename)
+    # Store the extraction info to ensure consistency
+    track_data["_extracted_info"] = {
+        "artist": extracted_artist,
+        "title": extracted_title,
+        "final_artist": artist,
+        "final_title": title,
+    }
+
+    # Generate safe filename using ONLY the title (not artist)
+    safe_filename = sanitize_filename(title)
     if DEBUG_DOWNLOAD:
         logger.debug(f"Generated filename: {safe_filename}")
+
+    logger.info(f"Final filename: '{safe_filename}'")
 
     # Define file path
     filepath = os.path.join(DOWNLOAD_PATH, f"{safe_filename}.mp3")
@@ -1050,6 +1316,13 @@ async def download_track(track_id: str, bot_user: Dict[str, Any]) -> Dict[str, A
 
     # Add metadata
     metadata_start = time.time()
+    # Store the extracted information in track_data to ensure it's used in tagging
+    track_data["_extracted_info"] = {
+        "artist": extracted_artist,
+        "title": extracted_title,
+        "final_artist": artist,
+        "final_title": title,
+    }
     await add_id3_tags(filepath, track_data)
     if DEBUG_DOWNLOAD:
         metadata_time = time.time() - metadata_start
@@ -1133,9 +1406,10 @@ def get_track_info(track: dict) -> dict:
     Returns:
         dict: Formatted track information
     """
-    # Log the keys available in the track object
-    track_keys = list(track.keys())
-    logger.debug(f"Track keys: {track_keys}")
+    track_id = track.get("id", "unknown")
+
+    if DEBUG_EXTRACTIONS:
+        logger.info(f"TRACK {track_id}: Processing track")
 
     # Extract user data, handling different response formats
     user = track.get("user", {})
@@ -1158,27 +1432,111 @@ def get_track_info(track: dict) -> dict:
 
     # Original track title
     original_title = track.get("title", "Unknown Title")
+    if DEBUG_EXTRACTIONS:
+        logger.info(f"TRACK {track_id}: Original title: '{original_title}'")
 
     # Extract publisher_metadata, handling missing data
     publisher_metadata = track.get("publisher_metadata", {})
     if not isinstance(publisher_metadata, dict):
         publisher_metadata = {}
 
-    # Determine artist name from available sources
-    artist = publisher_metadata.get("artist") or username
+    # Get artist from metadata if available
+    has_metadata_artist = False
+    metadata_artist = publisher_metadata.get("artist")
+    if metadata_artist:
+        has_metadata_artist = True
+        if DEBUG_EXTRACTIONS:
+            logger.info(f"TRACK {track_id}: Found metadata artist: '{metadata_artist}'")
+
+    # Starting title is the original title
     title = original_title
 
+    # First, ALWAYS attempt to extract artist and title from the original title
+    if DEBUG_EXTRACTIONS:
+        logger.info(f"TRACK {track_id}: Attempting extraction from: '{original_title}'")
+
     extracted_artist, extracted_title = extract_artist_title(original_title)
-    if extracted_artist:
-        # If we have a publisher-provided artist, prefer it
-        if publisher_metadata.get("artist"):
-            # Keeping publisher artist '{artist}' over extracted '{extracted_artist}'
-            pass
+
+    if DEBUG_EXTRACTIONS:
+        if extracted_artist:
+            logger.info(
+                f"TRACK {track_id}: Extraction successful - Artist: '{extracted_artist}', Title: '{extracted_title}'"
+            )
         else:
-            # Use the extracted artist and title
-            artist = extracted_artist
-            title = extracted_title
-            # Updated artist to '{artist}' and title to '{title}' from original '{original_title}'
+            logger.info(f"TRACK {track_id}: Extraction failed - No artist found")
+
+    # Now apply the results based on extraction success and metadata
+    # PRIORITIZE extracted info over metadata
+    if extracted_artist:
+        # Always use extracted artist if available
+        if DEBUG_EXTRACTIONS:
+            logger.info(
+                f"TRACK {track_id}: Using extracted artist '{extracted_artist}' and title '{extracted_title}'"
+            )
+        artist = extracted_artist
+        title = extracted_title
+    elif has_metadata_artist:
+        # If no extraction but we have metadata artist
+        artist = metadata_artist
+        if DEBUG_EXTRACTIONS:
+            logger.info(
+                f"TRACK {track_id}: Using metadata artist '{artist}', checking if title contains it"
+            )
+
+        # Try to clean the title if it contains the artist
+        cleaned_title = clean_title_if_contains_artist(title, artist)
+        if cleaned_title != title:
+            if DEBUG_EXTRACTIONS:
+                logger.info(
+                    f"TRACK {track_id}: Title cleaned with metadata artist: '{title}' -> '{cleaned_title}'"
+                )
+            title = cleaned_title
+        else:
+            if DEBUG_EXTRACTIONS:
+                logger.info(
+                    f"TRACK {track_id}: Title unchanged after cleaning with metadata artist"
+                )
+    else:
+        # Fallback to username
+        artist = username
+        if DEBUG_EXTRACTIONS:
+            logger.info(
+                f"TRACK {track_id}: No artist extracted or in metadata, using username: '{username}'"
+            )
+
+    if DEBUG_EXTRACTIONS:
+        logger.info(
+            f"TRACK {track_id}: Final artist: '{artist}', Final title: '{title}'"
+        )
+
+    # Function to check if artist is already in the title
+    def artist_in_title(artist_name, title_text):
+        if not artist_name or len(artist_name) < 2:
+            return False
+
+        # Check if title starts with artist name
+        if title_text.lower().startswith(artist_name.lower()):
+            return True
+
+        # Check if title contains "artist - " pattern
+        dash_chars = ["-", "−", "–", "—", "―"]
+        for dash in dash_chars:
+            if (
+                f"{artist_name.lower()} {dash}" in title_text.lower()
+                or f"{artist_name.lower()}{dash}" in title_text.lower()
+            ):
+                return True
+
+        return False
+
+    # For display_title generation - NEVER add artist to display title
+    # Set display_title to just the title, regardless of whether artist is in it or not
+    display_title = title
+
+    if DEBUG_EXTRACTIONS:
+        logger.info(
+            f"TRACK {track_id}: Using title as display title: '{display_title}'"
+        )
 
     # Get artwork URL
     artwork_url = track.get("artwork_url", "")
@@ -1209,7 +1567,10 @@ def get_track_info(track: dict) -> dict:
     return {
         "id": track.get("id"),
         "title": title,
+        "display_title": display_title,  # Added for UI display purposes
         "original_title": original_title,  # Keep original title for reference
+        "extracted_artist": extracted_artist,  # Add this for debugging
+        "extracted_title": extracted_title,  # Add this for debugging
         "artwork_url": artwork_url,
         "permalink_url": track.get("permalink_url", ""),
         "duration": format_duration(current_duration),

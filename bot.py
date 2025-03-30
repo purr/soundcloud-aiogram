@@ -18,6 +18,7 @@ from aiogram.types import (
     InlineQueryResultArticle,
 )
 from aiogram.filters import CommandStart
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.client.default import DefaultBotProperties
 
 from utils import (
@@ -284,9 +285,9 @@ async def inline_search(query: InlineQuery):
             # If we have full tracks info, use that
             if full_tracks:
                 for i, track in enumerate(full_tracks[:max_tracks_to_show]):
-                    track_title = track.get("title", "Unknown Track")
-                    track_id = track.get("id")
-                    track_artist = track.get("user", {}).get("username", user)
+                    # Get processed track info with correct artist/title
+                    track_info = get_track_info(track)
+                    track_id = track_info.get("id")
 
                     # Calculate duration of the track
                     duration_ms = track.get("duration", 0)
@@ -296,15 +297,15 @@ async def inline_search(query: InlineQuery):
                     # Create result for this track
                     track_result = InlineQueryResultArticle(
                         id=f"{track_id}_{i}",
-                        title=f"{i + 1}. {track_title}",
-                        description=f"By {track_artist} • {duration_str}",
+                        title=f"{i + 1}. {track_info['display_title']}",
+                        description=f"By {track_info['artist']} • {duration_str}",
                         input_message_content=InputTextMessageContent(
                             message_text=format_track_info_caption(
-                                get_track_info(track), bot_info.username
+                                track_info, bot_info.username
                             ),
                             parse_mode=ParseMode.HTML,
                         ),
-                        thumbnail_url=track.get("artwork_url")
+                        thumbnail_url=track_info.get("artwork_url")
                         or artwork_url
                         or SOUNDCLOUD_LOGO_URL,
                         reply_markup=InlineKeyboardMarkup(
@@ -321,27 +322,25 @@ async def inline_search(query: InlineQuery):
                         valid_tracks.append(track)
 
                 for i, track in enumerate(valid_tracks[:max_tracks_to_show]):
-                    track_title = track.get("title", "Unknown Track")
-                    track_id = track.get("id")
-                    track_artist = track.get("user", {}).get("username", user)
+                    # Get processed track info with correct artist/title
+                    track_info = get_track_info(track)
+                    track_id = track_info.get("id")
 
-                    # Calculate duration of the track (if available)
-                    duration_ms = track.get("duration", 0)
-                    minutes, seconds = divmod(duration_ms // 1000, 60)
-                    duration_str = f"{minutes}:{seconds:02d}"
+                    # Calculate duration of the track
+                    duration_str = track_info.get("duration", "0:00")
 
                     # Create result for this track
                     track_result = InlineQueryResultArticle(
                         id=f"{track_id}_{i}",
-                        title=f"{i + 1}. {track_title}",
-                        description=f"By {track_artist} • {duration_str}",
+                        title=f"{i + 1}. {track_info['display_title']}",
+                        description=f"By {track_info['artist']} • {duration_str}",
                         input_message_content=InputTextMessageContent(
                             message_text=format_track_info_caption(
-                                get_track_info(track), bot_info.username
+                                track_info, bot_info.username
                             ),
                             parse_mode=ParseMode.HTML,
                         ),
-                        thumbnail_url=track.get("artwork_url")
+                        thumbnail_url=track_info.get("artwork_url")
                         or artwork_url
                         or SOUNDCLOUD_LOGO_URL,
                         reply_markup=InlineKeyboardMarkup(
@@ -551,7 +550,7 @@ async def debounced_search(search_text: str, query: InlineQuery):
             # Create article result
             article_result = InlineQueryResultArticle(
                 id=result_id,
-                title=track_info["title"],
+                title=track_info["display_title"],
                 description=description,
                 thumbnail_url=artwork_url,
                 input_message_content=InputTextMessageContent(
@@ -866,7 +865,7 @@ async def handle_system_error(
 
         # Use zero-width space to prevent URL embedding
         permalink_url_no_embed = track_info["permalink_url"].replace("://", "://\u200c")
-        final_caption += f"♫ <a href='{permalink_url_no_embed}'><b>{html.escape(track_info['title'])}</b> - <b>{html.escape(track_info['artist'])}</b></a>\n\n"
+        final_caption += f"♫ <a href='{permalink_url_no_embed}'><b>{html.escape(track_info['display_title'])}</b> - <b>{html.escape(track_info['artist'])}</b></a>\n\n"
 
         final_caption += f"<b>Error details:</b> {error_message}\n\n"
 
@@ -938,7 +937,7 @@ async def fallback_to_direct_message(
 
         # Use zero-width space to prevent URL embedding
         permalink_url_no_embed = track_info["permalink_url"].replace("://", "://\u200c")
-        final_caption += f"♫ <a href='{permalink_url_no_embed}'>{html.escape(track_info['title'])} - {html.escape(track_info['artist'])}</a>\n\n"
+        final_caption += f"♫ <a href='{permalink_url_no_embed}'>{html.escape(track_info['display_title'])} - {html.escape(track_info['artist'])}</a>\n\n"
 
         # Include the search query if provided
         if search_query:
@@ -946,10 +945,11 @@ async def fallback_to_direct_message(
                 f"<b>Query:</b> <code>{html.escape(search_query)}</code>\n\n"
             )
 
+        # Add a timestamp to ensure message is always different when "Try Again" is clicked
         final_caption += "To download this track:\n"
         final_caption += "1. ➥ Click the button below to send <code>/start</code>\n"
         final_caption += "2. ↺ Return here and try downloading again\n\n"
-        final_caption += "<i>This is necessary because Telegram requires you to message the bot first before it can send you files.</i>"
+        final_caption += f"<i>This is necessary because Telegram requires you to message the bot first before it can send you files. (Last attempted: {int(time.time())})</i>"
 
         # Create keyboard with button to open chat with bot and try again button
         markup = InlineKeyboardMarkup(
@@ -959,11 +959,23 @@ async def fallback_to_direct_message(
             ]
         )
 
-        await bot.edit_message_caption(
-            inline_message_id=inline_message_id,
-            caption=final_caption,
-            reply_markup=markup,
-        )
+        try:
+            await bot.edit_message_caption(
+                inline_message_id=inline_message_id,
+                caption=final_caption,
+                reply_markup=markup,
+            )
+        except TelegramBadRequest as bad_req:
+            # Handle "message is not modified" error gracefully
+            if "message is not modified" in str(bad_req).lower():
+                logger.info(
+                    "Message content unchanged, user likely tried again without changes"
+                )
+                # No need to update the message, just ignore this error
+                pass
+            else:
+                # Some other bad request error, re-raise it to be caught by outer exception handler
+                raise
     except Exception as caption_err:
         logger.error(f"Error updating fallback caption: {caption_err}")
         try:
@@ -974,16 +986,29 @@ async def fallback_to_direct_message(
                     f"\n\n<b>Query:</b> <code>{html.escape(search_query)}</code>"
                 )
 
-            await bot.edit_message_caption(
-                inline_message_id=inline_message_id,
-                caption=simple_caption,
-                reply_markup=InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [start_chat_button(bot_user["username"])],
-                        [try_again_button(track_id)],
-                    ]
-                ),
-            )
+            # Add a timestamp to ensure message is always different
+            simple_caption += f"\n\n<i>Last attempt: {int(time.time())}</i>"
+
+            try:
+                await bot.edit_message_caption(
+                    inline_message_id=inline_message_id,
+                    caption=simple_caption,
+                    reply_markup=InlineKeyboardMarkup(
+                        inline_keyboard=[
+                            [start_chat_button(bot_user["username"])],
+                            [try_again_button(track_id)],
+                        ]
+                    ),
+                )
+            except TelegramBadRequest as bad_req:
+                # Handle "message is not modified" error gracefully
+                if "message is not modified" in str(bad_req).lower():
+                    logger.info("Simple fallback message content unchanged")
+                    # No need to update the message, just ignore this error
+                    pass
+                else:
+                    # Some other bad request error, re-raise it
+                    raise
         except Exception as final_err:
             logger.error(f"Final fallback caption update failed: {final_err}")
     finally:
@@ -1153,7 +1178,7 @@ async def track_details(callback: CallbackQuery):
 
         # Build detailed information
         details = (
-            f"♫ <b>{html.escape(track_info['title'])}</b>\n\n"
+            f"♫ <b>{html.escape(track_info['display_title'])}</b>\n\n"
             f"👤 Artist: <b>{html.escape(track_info['artist'])}</b>\n"
             f"⏱ Duration: {track_info['duration']}\n"
             f"📅 Released: {created_date}\n"
@@ -1254,11 +1279,6 @@ async def download_callback(callback: CallbackQuery):
             user_id = callback.from_user.id if callback.from_user else None
 
             if user_id:
-                # User still doesn't have open DMs, show chat access needed message again
-                logger.warning(
-                    f"User {user_id} tried to download but still has no DM access"
-                )
-
                 # Get track info to show in the message
                 track_data = await get_track(track_id)
                 if not track_data:
@@ -1278,108 +1298,214 @@ async def download_callback(callback: CallbackQuery):
                     "name": bot_info.full_name,
                 }
 
-                # Show chat access needed message again but update timestamp to make it clear it's a new attempt
-                await fallback_to_direct_message(
-                    callback.inline_message_id,
-                    track_id,
-                    track_info,
-                    bot_user,
-                    search_query,
+                # Check if the user has started the bot after the last try
+                has_started_bot = False
+                try:
+                    # Try to send a service message to check if user has DM access
+                    test_message = await bot.send_message(
+                        user_id, "Checking access...", disable_notification=True
+                    )
+                    has_started_bot = True
+                    # Delete the test message immediately
+                    await bot.delete_message(user_id, test_message.message_id)
+                except Exception as e:
+                    # If we get an error, user hasn't started the bot yet
+                    logger.info(f"User {user_id} has not started the bot yet: {e}")
+                    has_started_bot = False
+
+                if not has_started_bot:
+                    # Show chat access needed message again but update timestamp to make it clear it's a new attempt
+                    await fallback_to_direct_message(
+                        callback.inline_message_id,
+                        track_id,
+                        track_info,
+                        bot_user,
+                        search_query,
+                    )
+
+                    # Show more detailed instructions in an alert
+                    await callback.answer(
+                        "Please open a chat with the bot first and send /start, then try again.",
+                        show_alert=True,
+                    )
+                    return
+
+                # User has DMs open, we need to update the inline message instead of just sending a DM
+                logger.info(
+                    f"User {user_id} has DMs open, updating inline message directly"
                 )
 
-                # Show more detailed instructions in an alert
+                # Start a task to download and update the inline message
+                # This will handle both the DM (to get file_id) and the inline message update
+                update_task = asyncio.create_task(
+                    download_and_update_inline_message(
+                        callback.inline_message_id, track_id, search_query
+                    )
+                )
+                download_tasks[callback.inline_message_id] = update_task
+
+                # Show confirmation to the user that download has started
                 await callback.answer(
-                    "Please open a chat with the bot first and send /start, then try again.",
+                    "Download started! The track will appear shortly.",
+                    show_alert=False,
+                )
+
+                # We've started the inline message update task, so return early
+                # This prevents the function from proceeding to the regular DM flow below
+                return
+            # For regular messages, don't update text to keep original caption
+            elif callback.message:
+                # Skip updating text message to keep original caption
+                logger.info(
+                    "Skipping text update to keep original caption as per user request"
+                )
+                pass
+
+            # Get chat ID for sending messages
+            chat_id = None
+            original_message_id = None
+            if callback.message:
+                chat_id = callback.message.chat.id
+                original_message_id = callback.message.message_id
+            # For inline messages, we need to get the chat ID from the from_user
+            elif callback.from_user:
+                chat_id = callback.from_user.id
+                original_message_id = None
+
+            if not chat_id:
+                logger.warning(f"Cannot determine chat ID for track_id: {track_id}")
+                await callback.answer(
+                    "Cannot determine where to send the audio. Please try in a private chat.",
                     show_alert=True,
                 )
                 return
 
-            # User has DMs open, we need to update the inline message instead of just sending a DM
-            logger.info(
-                f"User {user_id} has DMs open, updating inline message directly"
-            )
+            # Get bot info for metadata
+            bot_info = await bot.get_me()
+            bot_user = {
+                "username": bot_info.username,
+                "id": bot_info.id,
+                "name": bot_info.full_name,
+            }
+            # Download the actual track
+            logger.info(f"Calling download_track function for track ID: {track_id}")
+            download_start = time.time()
+            download_result = await download_track(track_id, bot_user)
+            download_time = time.time() - download_start
 
-            # Start a task to download and update the inline message
-            # This will handle both the DM (to get file_id) and the inline message update
-            update_task = asyncio.create_task(
-                download_and_update_inline_message(
-                    callback.inline_message_id, track_id, search_query
+            # Track info for either success or failure cases
+            track_info = get_track_info(download_result.get("track_data", {}))
+
+            # Add Spotify URL if provided
+            spotify_url = None
+            if hasattr(download_result, "spotify_url"):
+                spotify_url = download_result.spotify_url
+                track_info["spotify_url"] = spotify_url
+
+            if download_result["success"]:
+                # Track downloaded successfully - now validate it
+                filepath = download_result["filepath"]
+
+                # Validate the downloaded track
+                is_valid, error_message = await validate_downloaded_track(
+                    filepath, track_info
                 )
-            )
-            download_tasks[callback.inline_message_id] = update_task
 
-            # We've started the inline message update task, so return early
-            # This prevents the function from proceeding to the regular DM flow below
-            return
-        # For regular messages, don't update text to keep original caption
-        elif callback.message:
-            # Skip updating text message to keep original caption
-            logger.info(
-                "Skipping text update to keep original caption as per user request"
-            )
-            pass
+                if not is_valid:
+                    logger.warning(
+                        f"Downloaded track validation failed: {error_message}"
+                    )
 
-        # Get chat ID for sending messages
-        chat_id = None
-        original_message_id = None
-        if callback.message:
-            chat_id = callback.message.chat.id
-            original_message_id = callback.message.message_id
-        # For inline messages, we need to get the chat ID from the from_user
-        elif callback.from_user:
-            chat_id = callback.from_user.id
-            original_message_id = None
+                    # Format the error message for inline message
+                    validation_failure_text = format_error_caption(
+                        "Invalid track: " + error_message, track_info, bot_info.username
+                    )
 
-        if not chat_id:
-            logger.warning(f"Cannot determine chat ID for track_id: {track_id}")
-            await callback.answer(
-                "Cannot determine where to send the audio. Please try in a private chat.",
-                show_alert=True,
-            )
-            return
+                    # Include the search query if provided
+                    if search_query:
+                        validation_failure_text += f"\n\n<b>Query:</b> <code>{html.escape(search_query)}</code>"
 
-        # Get bot info for metadata
-        bot_info = await bot.get_me()
-        bot_user = {
-            "username": bot_info.username,
-            "id": bot_info.id,
-            "name": bot_info.full_name,
-        }
-        # Download the actual track
-        logger.info(f"Calling download_track function for track ID: {track_id}")
-        download_start = time.time()
-        download_result = await download_track(track_id, bot_user)
-        download_time = time.time() - download_start
+                    # Try to update message if possible
+                    try:
+                        if callback.message:
+                            await callback.message.edit_text(
+                                validation_failure_text,
+                                reply_markup=None,  # No buttons
+                            )
+                        elif callback.inline_message_id:
+                            await bot.edit_message_text(
+                                inline_message_id=callback.inline_message_id,
+                                text=validation_failure_text,
+                                reply_markup=None,  # No buttons
+                            )
+                    except Exception as e:
+                        logger.error(
+                            f"Error updating message with validation failure: {e}"
+                        )
 
-        # Track info for either success or failure cases
-        track_info = get_track_info(download_result.get("track_data", {}))
+                    # Show an alert for validation failures
+                    await callback.answer(
+                        f"Invalid track: {error_message}", show_alert=True
+                    )
+                    return
 
-        # Add Spotify URL if provided
-        spotify_url = None
-        if hasattr(download_result, "spotify_url"):
-            spotify_url = download_result.spotify_url
-            track_info["spotify_url"] = spotify_url
+                # Track is valid, proceed with normal processing
+                logger.info(
+                    f"Download successful in {download_time:.2f} seconds: {download_result.get('filepath')}"
+                )
 
-        if download_result["success"]:
-            # Track downloaded successfully - now validate it
-            filepath = download_result["filepath"]
+                # Get artwork URL for a hyperlink
+                artwork_url = track_info.get("artwork_url") or ""
+                if artwork_url:
+                    # Convert to high resolution
+                    artwork_url = get_high_quality_artwork_url(artwork_url)
 
-            # Validate the downloaded track
-            is_valid, error_message = await validate_downloaded_track(
-                filepath, track_info
-            )
+                try:
 
-            if not is_valid:
-                logger.warning(f"Downloaded track validation failed: {error_message}")
+                    await send_audio_file(
+                        bot=bot,
+                        chat_id=chat_id,
+                        filepath=filepath,
+                        track_info=track_info,
+                        reply_to_message_id=original_message_id,
+                    )
+                except Exception as e:
+                    logger.error(f"Error sending audio: {e}")
 
-                # Format the error message for inline message
-                validation_failure_text = format_error_caption(
-                    "Invalid track: " + error_message, track_info, bot_info.username
+                    # Try to update messages with error information
+                    error_text = format_error_caption(
+                        f"Error: {str(e)[:200]}", track_info, bot_info.username
+                    )
+
+                    try:
+                        if callback.message:
+                            await callback.message.edit_text(
+                                error_text,
+                                reply_markup=None,  # No buttons
+                            )
+                        elif callback.inline_message_id:
+                            await bot.edit_message_text(
+                                inline_message_id=callback.inline_message_id,
+                                text=error_text,
+                                reply_markup=None,  # No buttons
+                            )
+                    except Exception as msg_update_err:
+                        logger.error(
+                            f"Error updating message with error: {msg_update_err}"
+                        )
+            else:
+                # Download failed
+                error_message = download_result.get("message", "Unknown error")
+                logger.error(f"Download failed: {error_message}")
+
+                # Format the error message
+                failure_text = format_error_caption(
+                    "Download failed: " + error_message, track_info, bot_info.username
                 )
 
                 # Include the search query if provided
                 if search_query:
-                    validation_failure_text += (
+                    failure_text += (
                         f"\n\n<b>Query:</b> <code>{html.escape(search_query)}</code>"
                     )
 
@@ -1387,100 +1513,22 @@ async def download_callback(callback: CallbackQuery):
                 try:
                     if callback.message:
                         await callback.message.edit_text(
-                            validation_failure_text,
+                            failure_text,
                             reply_markup=None,  # No buttons
                         )
                     elif callback.inline_message_id:
                         await bot.edit_message_text(
                             inline_message_id=callback.inline_message_id,
-                            text=validation_failure_text,
+                            text=failure_text,
                             reply_markup=None,  # No buttons
                         )
                 except Exception as e:
-                    logger.error(f"Error updating message with validation failure: {e}")
+                    logger.error(f"Error updating message with failure: {e}")
 
-                # Show an alert for validation failures
+                # Always show an alert for download failures
                 await callback.answer(
-                    f"Invalid track: {error_message}", show_alert=True
+                    f"Download failed: {error_message}", show_alert=True
                 )
-                return
-
-            # Track is valid, proceed with normal processing
-            logger.info(
-                f"Download successful in {download_time:.2f} seconds: {download_result.get('filepath')}"
-            )
-
-            # Get artwork URL for a hyperlink
-            artwork_url = track_info.get("artwork_url") or ""
-            if artwork_url:
-                # Convert to high resolution
-                artwork_url = get_high_quality_artwork_url(artwork_url)
-
-            try:
-
-                await send_audio_file(
-                    bot=bot,
-                    chat_id=chat_id,
-                    filepath=filepath,
-                    track_info=track_info,
-                    reply_to_message_id=original_message_id,
-                )
-            except Exception as e:
-                logger.error(f"Error sending audio: {e}")
-
-                # Try to update messages with error information
-                error_text = format_error_caption(
-                    f"Error: {str(e)[:200]}", track_info, bot_info.username
-                )
-
-                try:
-                    if callback.message:
-                        await callback.message.edit_text(
-                            error_text,
-                            reply_markup=None,  # No buttons
-                        )
-                    elif callback.inline_message_id:
-                        await bot.edit_message_text(
-                            inline_message_id=callback.inline_message_id,
-                            text=error_text,
-                            reply_markup=None,  # No buttons
-                        )
-                except Exception as msg_update_err:
-                    logger.error(f"Error updating message with error: {msg_update_err}")
-        else:
-            # Download failed
-            error_message = download_result.get("message", "Unknown error")
-            logger.error(f"Download failed: {error_message}")
-
-            # Format the error message
-            failure_text = format_error_caption(
-                "Download failed: " + error_message, track_info, bot_info.username
-            )
-
-            # Include the search query if provided
-            if search_query:
-                failure_text += (
-                    f"\n\n<b>Query:</b> <code>{html.escape(search_query)}</code>"
-                )
-
-            # Try to update message if possible
-            try:
-                if callback.message:
-                    await callback.message.edit_text(
-                        failure_text,
-                        reply_markup=None,  # No buttons
-                    )
-                elif callback.inline_message_id:
-                    await bot.edit_message_text(
-                        inline_message_id=callback.inline_message_id,
-                        text=failure_text,
-                        reply_markup=None,  # No buttons
-                    )
-            except Exception as e:
-                logger.error(f"Error updating message with failure: {e}")
-
-            # Always show an alert for download failures
-            await callback.answer(f"Download failed: {error_message}", show_alert=True)
 
     except Exception as e:
         logger.error(f"Error in download callback: {e}")
@@ -1827,7 +1875,7 @@ async def handle_spotify_link(message: Message):
         # Show that we found a match
         await status_msg.edit_text(
             f"✅ <b>Found on SoundCloud:</b>\n"
-            f"<b>{html.escape(track_info['title'])}</b> by <b>{html.escape(track_info['artist'])}</b>\n\n"
+            f"<b>{html.escape(track_info['display_title'])}</b> by <b>{html.escape(track_info['artist'])}</b>\n\n"
             f"⏳ Starting download...",
             disable_notification=True,  # Send silently
         )

@@ -13,7 +13,7 @@ download_status_button = InlineKeyboardButton(
 
 def try_again_button(track_id: str):
     return InlineKeyboardButton(
-        text="↺ Try Again",
+        text="🔄 Try Again",
         callback_data=f"download:{track_id}",
     )
 

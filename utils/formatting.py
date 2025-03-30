@@ -104,7 +104,7 @@ def format_error_caption(
 
     # Using zero-width space (\u200c) inside the URL to prevent embedding
     permalink_url_no_embed = track_info["permalink_url"].replace("://", "://\u200c")
-    caption += f"♫ <a href='{permalink_url_no_embed}'><b>{html.escape(track_info['title'])}</b> - <b>{html.escape(track_info['artist'])}</b></a>"
+    caption += f"♫ <a href='{permalink_url_no_embed}'><b>{html.escape(track_info['display_title'])}</b></a>"
 
     return caption
 
@@ -125,6 +125,6 @@ def format_success_caption(message: str, track_info: Dict, bot_username: str) ->
 
     # Using zero-width space (\u200c) inside the URL to prevent embedding
     permalink_url_no_embed = track_info["permalink_url"].replace("://", "://\u200c")
-    caption += f"♫ <a href='{permalink_url_no_embed}'><b>{html.escape(track_info['title'])}</b> - <b>{html.escape(track_info['artist'])}</b></a>"
+    caption += f"♫ <a href='{permalink_url_no_embed}'><b>{html.escape(track_info['display_title'])}</b></a>"
 
     return caption
