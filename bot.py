@@ -5,7 +5,6 @@ import traceback
 from typing import Dict
 from datetime import datetime
 
-import aiohttp
 from aiogram import F, Bot, Router, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.types import (
@@ -785,12 +784,13 @@ async def download_and_update_inline_message(
                     )
 
                     if not success:
-                        await handle_download_failure(
-                            bot=bot,
-                            message_id=inline_message_id,
-                            track_info=track_info,
-                            error_message="Failed to send audio file to get file_id",
-                            search_query=search_query,
+                        # Show the permission required message
+                        await fallback_to_direct_message(
+                            inline_message_id,
+                            track_id,
+                            track_info,
+                            bot_user,
+                            search_query,
                         )
                         return
 
@@ -826,21 +826,12 @@ async def download_and_update_inline_message(
                             search_query,
                         )
 
-                except aiohttp.ClientOSError as os_err:
-                    logger.error(f"System error when sending DM to user: {os_err}")
-                    await handle_system_error(
-                        bot=bot,
-                        message_id=inline_message_id,
-                        track_info=track_info,
-                        error_message=f"System error: Unable to process audio file. {str(os_err)}",
-                        search_query=search_query,
-                        filepath=filepath,
-                    )
                 except Exception as dm_err:
                     if is_permission_error(dm_err):
                         logger.error(
                             f"Permission error when sending DM to user: {dm_err}"
                         )
+                        # Show the permission required message
                         await fallback_to_direct_message(
                             inline_message_id,
                             track_id,
@@ -898,7 +889,7 @@ async def download_and_update_inline_message(
                     inline_keyboard=[
                         [
                             InlineKeyboardButton(
-                                text="🔄 Try Again",
+                                text="Try Again",
                                 callback_data=f"download:{track_id}",
                             ),
                         ]
@@ -1027,42 +1018,35 @@ async def fallback_to_direct_message(
             artwork_url = get_high_quality_artwork_url(artwork_url)
 
         # Prepare caption with minimalistic format and clearer instructions
-        final_caption = "⚠️ <b>Chat Access Needed</b>\n\n"
+        final_caption = "⚠️ <b>Permission Required</b>\n\n"
 
         # Use zero-width space to prevent URL embedding
         permalink_url_no_embed = track_info["permalink_url"].replace("://", "://\u200c")
-        final_caption += f"♫ <a href='{permalink_url_no_embed}'><b>{html.escape(track_info['title'])}</b> - <b>{html.escape(track_info['artist'])}</b></a>\n\n"
+        final_caption += f"♫ <a href='{permalink_url_no_embed}'>{html.escape(track_info['title'])} - {html.escape(track_info['artist'])}</a>\n\n"
 
-        # Include the search query or URL if provided
+        # Include the search query if provided
         if search_query:
             final_caption += (
                 f"<b>Query:</b> <code>{html.escape(search_query)}</code>\n\n"
             )
 
-        final_caption += "<b>To download this track:</b>\n"
-        final_caption += (
-            "1. ➡️ <b>Click the button below</b> to start a chat with the bot\n"
-        )
-        final_caption += "2. ✉️ Send /start to the bot\n"
-        final_caption += "3. 🔄 Return here and try downloading again\n\n"
+        final_caption += "To download this track:\n"
+        final_caption += "1. ➡️ Click the button below to send <code>/start</code>\n"
+        final_caption += "2. 🔄 Return here and try downloading again\n\n"
         final_caption += "<i>This is necessary because Telegram requires you to message the bot first before it can send you files.</i>"
 
-        # Add a timestamp to make it clear when the message was last updated
-        current_time = datetime.now().strftime("%H:%M:%S")
-        final_caption += f"\n\n<i>Last updated: {current_time}</i>"
-
-        # Create keyboard with button to open chat with bot
+        # Create keyboard with button to open chat with bot and try again button
         markup = InlineKeyboardMarkup(
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="📱 Open Bot Chat",
+                        text="📱 Start Chat with Bot",
                         url=f"https://t.me/{bot_user['username']}?start=open_dms",
                     ),
                 ],
                 [
                     InlineKeyboardButton(
-                        text="🔄 Try Download Again",
+                        text="🔄 Try Again",
                         callback_data=f"download:{track_id}",
                     ),
                 ],
@@ -1078,7 +1062,7 @@ async def fallback_to_direct_message(
         logger.error(f"Error updating fallback caption: {caption_err}")
         try:
             # Simpler fallback if the first attempt fails
-            simple_caption = f"⚠️ <b>Chat Access Needed:</b> Please message @{bot_user['username']} first (/start) before downloading."
+            simple_caption = f"⚠️ <b>Permission Required:</b> Please message @{bot_user['username']} first (/start) before downloading."
             if search_query:
                 simple_caption += (
                     f"\n\n<b>Query:</b> <code>{html.escape(search_query)}</code>"
@@ -1087,15 +1071,29 @@ async def fallback_to_direct_message(
             await bot.edit_message_caption(
                 inline_message_id=inline_message_id,
                 caption=simple_caption,
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            InlineKeyboardButton(
+                                text="Start Chat with Bot",
+                                url=f"https://t.me/{bot_user['username']}?start=open_dms",
+                            ),
+                        ],
+                        [
+                            InlineKeyboardButton(
+                                text="Try Again",
+                                callback_data=f"download:{track_id}",
+                            ),
+                        ],
+                    ]
+                ),
             )
         except Exception as final_err:
             logger.error(f"Final fallback caption update failed: {final_err}")
     finally:
         # Clean up any downloaded files
         if filepath:
-            await cleanup_files(
-                filepath,
-            )
+            await cleanup_files(filepath)
 
 
 @router.callback_query(F.data == "download_status")

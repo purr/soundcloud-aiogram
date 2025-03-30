@@ -5,3 +5,4 @@ aiofiles
 mutagen
 httpx
 loguru
+pillow
