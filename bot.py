@@ -1216,7 +1216,7 @@ async def track_details(callback: CallbackQuery):
                             soundcloud_button(track_info["permalink_url"]),
                             artist_button(
                                 track_info["user"]["url"]
-                                or track_info["permalink_url"],
+                                + f"?urn={track_info['user']['urn']}"
                             ),
                         ],
                         [
