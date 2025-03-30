@@ -17,6 +17,57 @@ A Telegram bot that allows users to search for and download tracks from SoundClo
 - ⚠️ Detailed error handling with clear messages
 - ⏳ Clear "Processing..." status indication when downloading
 
+## Setup
+
+### Prerequisites
+
+- Python 3.8 or higher
+- FFmpeg (required for HLS downloads)
+- pip (Python package installer)
+
+### Installation
+
+1. Run the setup script:
+
+```bash
+chmod +x setup.sh
+./setup.sh
+```
+
+This will:
+
+- Install FFmpeg and other system dependencies
+- Install required Python packages
+- Set up the environment
+
+2. Configure the environment:
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` and add your:
+
+- Telegram Bot Token (from @BotFather)
+
+### Manual Setup (if setup.sh fails)
+
+If the automatic setup doesn't work, you can install the dependencies manually:
+
+1. Install FFmpeg:
+
+   - **Ubuntu/Debian**: `sudo apt-get install ffmpeg`
+   - **Fedora**: `sudo dnf install ffmpeg`
+   - **Arch Linux**: `sudo pacman -S ffmpeg`
+   - **CentOS/RHEL**: Enable EPEL repository and `sudo yum install ffmpeg`
+   - **Windows**: Download from [FFmpeg website](https://ffmpeg.org/download.html)
+
+2. Install Python dependencies:
+
+```bash
+pip3 install -r requirements.txt
+```
+
 ## Usage
 
 1. Add the bot to your Telegram: [@your_bot_username]
