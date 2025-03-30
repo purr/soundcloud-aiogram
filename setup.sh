@@ -27,4 +27,4 @@ echo "Installing Python dependencies..."
 pip3 install -r requirements.txt
 
 echo "Setup completed successfully!"
-echo "Make sure to configure your .env file with the required API tokens." 
+echo "Make sure to configure your .env file with the Bot Token" 

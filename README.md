@@ -199,9 +199,6 @@ The bot uses environment variables for sensitive information. To set up:
 ```
 # Telegram Bot Token (required)
 BOT_TOKEN=your_telegram_bot_token
-
-# SoundCloud API Client ID (required)
-CLIENT_ID=your_soundcloud_client_id
 ```
 
 Obtain your Telegram bot token from [BotFather](https://t.me/botfather).
