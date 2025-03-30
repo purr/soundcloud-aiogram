@@ -23,8 +23,10 @@ from utils import (
     format_track_info_caption,
     get_high_quality_artwork_url,
 )
-from soundcloud import cleanup_files
+from predefined import artist_button, try_again_button, soundcloud_button
 from utils.formatting import get_low_quality_artwork_url
+
+from .soundcloud import cleanup_files
 
 logger = logging.getLogger(__name__)
 
@@ -221,17 +223,9 @@ async def handle_system_error(
         markup = InlineKeyboardMarkup(
             inline_keyboard=[
                 [
-                    InlineKeyboardButton(
-                        text="▶️ Open in SoundCloud",
-                        url=track_info["permalink_url"],
-                    ),
+                    soundcloud_button(track_info["permalink_url"]),
                 ],
-                [
-                    InlineKeyboardButton(
-                        text="🔄 Try Again",
-                        callback_data=f"download:{track_info['id']}",
-                    ),
-                ],
+                [try_again_button(track_info["id"])],
             ]
         )
 
@@ -253,14 +247,7 @@ async def handle_system_error(
                 inline_message_id=message_id,
                 caption=simple_caption,
                 reply_markup=InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [
-                            InlineKeyboardButton(
-                                text="🔄 Try Again",
-                                callback_data=f"download:{track_info['id']}",
-                            ),
-                        ]
-                    ]
+                    inline_keyboard=[[try_again_button(track_info["id"])]]
                 ),
             )
         except Exception as e:
@@ -405,16 +392,11 @@ async def send_audio_file(
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[
                     [
-                        InlineKeyboardButton(
-                            text="▶️ SoundCloud",
-                            url=track_info["permalink_url"],
-                        ),
-                        InlineKeyboardButton(
-                            text="👤 Artist",
-                            url=(
-                                track_info["user"]["url"] or track_info["permalink_url"]
-                            )
-                            + f"?urn={track_info['user']['urn']}",
+                        soundcloud_button(track_info["permalink_url"]),
+                        artist_button(
+                            track_info["user"]["url"]
+                            or track_info["permalink_url"]
+                            + f"?urn={track_info['user']['urn']}"
                         ),
                     ],
                     [

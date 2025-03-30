@@ -1,7 +1,7 @@
 import re
 from typing import Tuple, Optional
 
-from soundcloud import get_track, resolve_url, get_playlist, extract_track_id_from_url
+from helpers import get_track, resolve_url, get_playlist, extract_track_id_from_url
 from utils.logger import get_logger
 
 # Configure logging

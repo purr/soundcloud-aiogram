@@ -13,12 +13,6 @@ SOUNDCLOUD_SEARCH_API = "https://api-v2.soundcloud.com/search/tracks"
 SOUNDCLOUD_TRACK_API = "https://api-v2.soundcloud.com/tracks"
 SOUNDCLOUD_RESOLVE_API = "https://api-v2.soundcloud.com/resolve"
 
-# Debug mode
-DEBUG = True
-
-# Logging level
-LOG_LEVEL = "INFO" if DEBUG else "WARNING"
-
 # Debug options
 DEBUG_SEARCH = False  # Set to False to disable verbose logging for search
 DEBUG_DOWNLOAD = True  # Set to True to enable verbose logging for downloads
@@ -28,9 +22,7 @@ SEARCH_TIMEOUT = 0.5
 
 # Download settings
 DOWNLOAD_PATH = os.getenv("DOWNLOAD_PATH", "downloads")
-EXTRACT_ARTIST_FROM_TITLE = True
-DOWNLOAD_ORIGINAL_QUALITY = True
-MAX_DOWNLOAD_SIZE = 100 * 1024 * 1024  # 100MB
+MAX_DOWNLOAD_SIZE = 50 * 1024 * 1024  # 50MB
 NAME_FORMAT = "{artist} - {title}"
 
 # Playlist settings

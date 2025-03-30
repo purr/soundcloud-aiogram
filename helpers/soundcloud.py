@@ -21,7 +21,6 @@ from config import (
     SOUNDCLOUD_TRACK_API,
     SOUNDCLOUD_SEARCH_API,
     SOUNDCLOUD_RESOLVE_API,
-    EXTRACT_ARTIST_FROM_TITLE,
 )
 from utils.logger import get_logger
 from utils.client_id import get_client_id
@@ -829,21 +828,19 @@ async def add_id3_tags(filepath: str, track_data: dict) -> None:
             artist = track_data["publisher_metadata"]["artist"]
             logger.info(f"Using artist from publisher_metadata: {artist}")
 
-        # Extract artist from title if configured and not found in metadata
-        if EXTRACT_ARTIST_FROM_TITLE:
-            extracted_artist, extracted_title = extract_artist_title(title)
+        extracted_artist, extracted_title = extract_artist_title(title)
 
-            # Only use extracted artist if it was found and we don't already have a better source
-            if extracted_artist:
-                # If we already have a publisher-provided artist, compare them
-                if artist != username and artist != extracted_artist:
-                    pass  # Not using extracted artist '{extracted_artist}' because metadata artist '{artist}' is available
+        # Only use extracted artist if it was found and we don't already have a better source
+        if extracted_artist:
+            # If we already have a publisher-provided artist, compare them
+            if artist != username and artist != extracted_artist:
+                pass  # Not using extracted artist '{extracted_artist}' because metadata artist '{artist}' is available
 
-                else:
-                    # Use extracted artist and title
-                    artist = extracted_artist
-                    title = extracted_title
-                    # "Using extracted artist: {artist}, new title: {title}
+            else:
+                # Use extracted artist and title
+                artist = extracted_artist
+                title = extracted_title
+                # "Using extracted artist: {artist}, new title: {title}
 
         # Create or clear existing tags
         audio = mutagen.File(filepath, easy=True)
@@ -977,18 +974,16 @@ async def download_track(track_id: str, bot_user: Dict[str, Any]) -> Dict[str, A
         artist = track_data["publisher_metadata"]["artist"]
         logger.info(f"Using artist '{artist}' from publisher metadata")
 
-    # Extract artist from title if configured
-    if EXTRACT_ARTIST_FROM_TITLE:
-        extracted_artist, extracted_title = extract_artist_title(original_title)
-        if extracted_artist:
-            # If we already have a publisher-provided artist, compare them
-            if artist != username and artist != extracted_artist:
-                pass  # Not using extracted artist '{extracted_artist}' because metadata artist '{artist}' is available
-            else:
-                # Use extracted artist and title
-                artist = extracted_artist
-                title = extracted_title
-                # Using extracted artist: {artist}, new title: {title}
+    extracted_artist, extracted_title = extract_artist_title(original_title)
+    if extracted_artist:
+        # If we already have a publisher-provided artist, compare them
+        if artist != username and artist != extracted_artist:
+            pass  # Not using extracted artist '{extracted_artist}' because metadata artist '{artist}' is available
+        else:
+            # Use extracted artist and title
+            artist = extracted_artist
+            title = extracted_title
+            # Using extracted artist: {artist}, new title: {title}
 
     if DEBUG_DOWNLOAD:
         logger.debug(f"Artist: {artist}, Title: {title}")
@@ -1173,19 +1168,17 @@ def get_track_info(track: dict) -> dict:
     artist = publisher_metadata.get("artist") or username
     title = original_title
 
-    # Try to extract artist from title if enabled
-    if EXTRACT_ARTIST_FROM_TITLE:
-        extracted_artist, extracted_title = extract_artist_title(original_title)
-        if extracted_artist:
-            # If we have a publisher-provided artist, prefer it
-            if publisher_metadata.get("artist"):
-                # Keeping publisher artist '{artist}' over extracted '{extracted_artist}'
-                pass
-            else:
-                # Use the extracted artist and title
-                artist = extracted_artist
-                title = extracted_title
-                # Updated artist to '{artist}' and title to '{title}' from original '{original_title}'
+    extracted_artist, extracted_title = extract_artist_title(original_title)
+    if extracted_artist:
+        # If we have a publisher-provided artist, prefer it
+        if publisher_metadata.get("artist"):
+            # Keeping publisher artist '{artist}' over extracted '{extracted_artist}'
+            pass
+        else:
+            # Use the extracted artist and title
+            artist = extracted_artist
+            title = extracted_title
+            # Updated artist to '{artist}' and title to '{title}' from original '{original_title}'
 
     # Get artwork URL
     artwork_url = track.get("artwork_url", "")

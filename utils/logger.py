@@ -2,13 +2,6 @@ import sys
 
 from loguru import logger
 
-# Import LOG_LEVEL from config or use a default value
-try:
-    from config import DEBUG, LOG_LEVEL
-except ImportError:
-    LOG_LEVEL = "INFO"
-    DEBUG = False
-
 # Remove default logger
 logger.remove()
 
@@ -24,7 +17,7 @@ format_string = (
 logger.add(
     sys.stdout,
     format=format_string,
-    level=LOG_LEVEL,
+    level="INFO",
     colorize=True,
     backtrace=True,
     diagnose=True,

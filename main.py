@@ -1,4 +1,5 @@
 import os
+import shutil
 import asyncio
 
 from bot import dp, bot, router, process_download_queue
@@ -40,7 +41,12 @@ async def main():
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        if shutil.which("ffmpeg") is None:
+            logger.error("FFmpeg not found, required for HLS downloads")
+            logger.info("Please install ffmpeg to start the bot")
+            exit(1)
+        else:
+            asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logger.info("Bot stopped!")
     except Exception as e:

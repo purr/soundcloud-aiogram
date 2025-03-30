@@ -36,14 +36,7 @@ from config import (
     SOUNDCLOUD_LOGO_URL,
     MAX_PLAYLIST_TRACKS_TO_SHOW,
 )
-from spotify import create_soundcloud_search_query, extract_metadata_from_spotify_url
-from workers import (
-    send_audio_file,
-    handle_download_failure,
-    validate_downloaded_track,
-    update_inline_message_with_audio,
-)
-from soundcloud import (
+from helpers import (
     get_track,
     cleanup_files,
     filter_tracks,
@@ -51,8 +44,24 @@ from soundcloud import (
     get_track_info,
     get_tracks_batch,
     search_soundcloud,
+    create_soundcloud_search_query,
+    extract_metadata_from_spotify_url,
+)
+from predefined import (
+    artist_button,
+    try_again_button,
+    soundcloud_button,
+    start_chat_button,
+    download_status_button,
+    example_inline_search_button,
 )
 from utils.logger import get_logger
+from helpers.workers import (
+    send_audio_file,
+    handle_download_failure,
+    validate_downloaded_track,
+    update_inline_message_with_audio,
+)
 
 
 # Define a function to classify errors
@@ -144,12 +153,7 @@ async def cmd_start(message: Message):
         f"❥ By @pinkiepie",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text="🔍 Click here to start searching",
-                        switch_inline_query_current_chat="drain gang",
-                    )
-                ],
+                [example_inline_search_button],
                 [
                     InlineKeyboardButton(
                         text="🏷️ Edit ID3 Tags with @id3_robot",
@@ -173,11 +177,20 @@ async def inline_search(query: InlineQuery):
                 InlineQueryResultArticle(
                     id="example1",
                     title="Search for SoundCloud tracks",
-                    description="Type your search query to find tracks or paste a SoundCloud/Spotify link",
+                    description="Search for Track/Artist or use a SoundCloud/Spotify link",
                     input_message_content=InputTextMessageContent(
-                        message_text=f"How to use this bot:\n\n1. Type @{bot_info.username} followed by your search query\n2. Select a track from the results\n3. The track will be sent automatically"
+                        message_text=(
+                            f"How to use this bot:\n\n"
+                            f"1. Dm the bot @{bot_info.username}\n"
+                            f"2. Type your search query inline anywhere\n"
+                            f"3. Select a track from the results\n"
+                            f"4. The track will be sent automatically"
+                        )
                     ),
                     thumbnail_url=SOUNDCLOUD_LOGO_URL,
+                    reply_markup=InlineKeyboardMarkup(
+                        inline_keyboard=[[example_inline_search_button]]
+                    ),
                 )
             ],
             cache_time=60 * 60 * 24,
@@ -295,14 +308,7 @@ async def inline_search(query: InlineQuery):
                         or artwork_url
                         or SOUNDCLOUD_LOGO_URL,
                         reply_markup=InlineKeyboardMarkup(
-                            inline_keyboard=[
-                                [
-                                    InlineKeyboardButton(
-                                        text="⬇️ Downloading...",
-                                        callback_data="download_status",
-                                    ),
-                                ]
-                            ]
+                            inline_keyboard=[[download_status_button]]
                         ),
                     )
                     inline_results.append(track_result)
@@ -339,14 +345,7 @@ async def inline_search(query: InlineQuery):
                         or artwork_url
                         or SOUNDCLOUD_LOGO_URL,
                         reply_markup=InlineKeyboardMarkup(
-                            inline_keyboard=[
-                                [
-                                    InlineKeyboardButton(
-                                        text="⬇️ Downloading...",
-                                        callback_data="download_status",
-                                    ),
-                                ]
-                            ]
+                            inline_keyboard=[[download_status_button]]
                         ),
                     )
                     inline_results.append(track_result)
@@ -419,16 +418,7 @@ async def inline_search(query: InlineQuery):
             track_duration = track_info["duration"]
 
             # Create keyboard with download button
-            keyboard = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        InlineKeyboardButton(
-                            text="⬇️ Downloading...",
-                            callback_data="download_status",
-                        ),
-                    ]
-                ]
-            )
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[[download_status_button]])
 
             # Get artwork URL for thumbnail
             artwork_url = track_info.get("artwork_url", "")
@@ -546,16 +536,7 @@ async def debounced_search(search_text: str, query: InlineQuery):
                 )
 
             # Create keyboard with download button
-            keyboard = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        InlineKeyboardButton(
-                            text="⬇️ Downloading...",
-                            callback_data="download_status",
-                        ),
-                    ]
-                ]
-            )
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[[download_status_button]])
 
             # Format duration for display
             duration_str = track_info.get("duration", "")
@@ -643,49 +624,6 @@ async def chosen_inline_result_handler(chosen_result: ChosenInlineResult):
             "result_index": result_index,
         }
     )
-
-
-async def set_processing_status(inline_message_id: str):
-    """Update the inline audio message title to 'Processing...' when a user selects a track.
-
-    Args:
-        inline_message_id: The ID of the inline message to update
-    """
-    try:
-        logger.info(f"Setting processing status for message {inline_message_id}")
-
-        # Skip updating the processing status to keep original caption
-        logger.info("Skipping processing status update as per user request")
-        return
-
-        # The code below is intentionally unreachable
-        # Create the keyboard with a download status button
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text="⏳ Processing...",
-                        callback_data="download_status",
-                    ),
-                ]
-            ]
-        )
-
-        # Update the message media
-        try:
-            await bot.edit_message_media(
-                inline_message_id=inline_message_id,
-                reply_markup=keyboard,
-            )
-        except Exception as media_error:
-            logger.error(f"Error updating media: {media_error}")
-
-        logger.info(
-            f"Successfully updated to processing status for {inline_message_id}"
-        )
-    except Exception as e:
-        logger.error(f"Error setting processing status: {e}", exc_info=True)
-        # Continue with download even if we can't update the status
 
 
 async def download_and_update_inline_message(
@@ -886,14 +824,7 @@ async def download_and_update_inline_message(
                 inline_message_id=inline_message_id,
                 caption=error_caption,
                 reply_markup=InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [
-                            InlineKeyboardButton(
-                                text="Try Again",
-                                callback_data=f"download:{track_id}",
-                            ),
-                        ]
-                    ]
+                    inline_keyboard=[[try_again_button(track_id)]]
                 ),
             )
         except Exception:
@@ -952,17 +883,9 @@ async def handle_system_error(
         markup = InlineKeyboardMarkup(
             inline_keyboard=[
                 [
-                    InlineKeyboardButton(
-                        text="▶️ Open in SoundCloud",
-                        url=track_info["permalink_url"],
-                    ),
+                    soundcloud_button(track_info["permalink_url"]),
                 ],
-                [
-                    InlineKeyboardButton(
-                        text="🔄 Try Again",
-                        callback_data=f"download:{track_id}",
-                    ),
-                ],
+                [try_again_button(track_id)],
             ]
         )
 
@@ -985,14 +908,7 @@ async def handle_system_error(
                 inline_message_id=inline_message_id,
                 caption=simple_caption,
                 reply_markup=InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [
-                            InlineKeyboardButton(
-                                text="🔄 Try Again",
-                                callback_data=f"download:{track_id}",
-                            ),
-                        ]
-                    ]
+                    inline_keyboard=[[try_again_button(track_id)]]
                 ),
             )
         except Exception as e:
@@ -1031,25 +947,15 @@ async def fallback_to_direct_message(
             )
 
         final_caption += "To download this track:\n"
-        final_caption += "1. ➡️ Click the button below to send <code>/start</code>\n"
-        final_caption += "2. 🔄 Return here and try downloading again\n\n"
+        final_caption += "1. ➥ Click the button below to send <code>/start</code>\n"
+        final_caption += "2. ↺ Return here and try downloading again\n\n"
         final_caption += "<i>This is necessary because Telegram requires you to message the bot first before it can send you files.</i>"
 
         # Create keyboard with button to open chat with bot and try again button
         markup = InlineKeyboardMarkup(
             inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text="📱 Start Chat with Bot",
-                        url=f"https://t.me/{bot_user['username']}?start=open_dms",
-                    ),
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="🔄 Try Again",
-                        callback_data=f"download:{track_id}",
-                    ),
-                ],
+                [start_chat_button(bot_user["username"])],
+                [try_again_button(track_id)],
             ]
         )
 
@@ -1062,7 +968,7 @@ async def fallback_to_direct_message(
         logger.error(f"Error updating fallback caption: {caption_err}")
         try:
             # Simpler fallback if the first attempt fails
-            simple_caption = f"⚠️ <b>Permission Required:</b> Please message @{bot_user['username']} first (/start) before downloading."
+            simple_caption = f"🔒 <b>Permission Required:</b> Please message @{bot_user['username']} first (/start) before downloading."
             if search_query:
                 simple_caption += (
                     f"\n\n<b>Query:</b> <code>{html.escape(search_query)}</code>"
@@ -1073,18 +979,8 @@ async def fallback_to_direct_message(
                 caption=simple_caption,
                 reply_markup=InlineKeyboardMarkup(
                     inline_keyboard=[
-                        [
-                            InlineKeyboardButton(
-                                text="Start Chat with Bot",
-                                url=f"https://t.me/{bot_user['username']}?start=open_dms",
-                            ),
-                        ],
-                        [
-                            InlineKeyboardButton(
-                                text="Try Again",
-                                callback_data=f"download:{track_id}",
-                            ),
-                        ],
+                        [start_chat_button(bot_user["username"])],
+                        [try_again_button(track_id)],
                     ]
                 ),
             )
@@ -1200,10 +1096,7 @@ async def download_and_send(message: Message, track_id: str, spotify_url=None):
                 reply_markup=InlineKeyboardMarkup(
                     inline_keyboard=[
                         [
-                            InlineKeyboardButton(
-                                text="▶️ Listen on SoundCloud",
-                                url=track_info["permalink_url"],
-                            ),
+                            soundcloud_button(track_info["permalink_url"]),
                         ]
                     ]
                 ),
@@ -1295,12 +1188,9 @@ async def track_details(callback: CallbackQuery):
                 reply_markup=InlineKeyboardMarkup(
                     inline_keyboard=[
                         [
-                            InlineKeyboardButton(
-                                text="▶️ Listen", url=track_info["permalink_url"]
-                            ),
-                            InlineKeyboardButton(
-                                text="👤 Artist",
-                                url=track_info["user"]["url"]
+                            soundcloud_button(track_info["permalink_url"]),
+                            artist_button(
+                                track_info["user"]["url"]
                                 or track_info["permalink_url"],
                             ),
                         ],
@@ -1408,8 +1298,6 @@ async def download_callback(callback: CallbackQuery):
             logger.info(
                 f"User {user_id} has DMs open, updating inline message directly"
             )
-            # Skip updating processing status to keep original caption
-            # await set_processing_status(callback.inline_message_id)
 
             # Start a task to download and update the inline message
             # This will handle both the DM (to get file_id) and the inline message update
@@ -1654,10 +1542,7 @@ async def deep_link_start(message: Message):
                         reply_markup=InlineKeyboardMarkup(
                             inline_keyboard=[
                                 [
-                                    InlineKeyboardButton(
-                                        text="▶️ Listen on SoundCloud",
-                                        url=track_info["permalink_url"],
-                                    ),
+                                    soundcloud_button(track_info["permalink_url"]),
                                 ]
                             ]
                         ),
@@ -1695,10 +1580,7 @@ async def deep_link_start(message: Message):
                     reply_markup=InlineKeyboardMarkup(
                         inline_keyboard=[
                             [
-                                InlineKeyboardButton(
-                                    text="▶️ Listen on SoundCloud",
-                                    url=track_info["permalink_url"],
-                                ),
+                                soundcloud_button(track_info["permalink_url"]),
                             ]
                         ]
                     ),
@@ -1842,9 +1724,7 @@ async def handle_soundcloud_link(message: Message):
 
         # Add "View on SoundCloud" button
         permalink_url = playlist_data.get("permalink_url", soundcloud_url)
-        keyboard.append(
-            [InlineKeyboardButton(text="🔗 View on SoundCloud", url=permalink_url)]
-        )
+        keyboard.append([soundcloud_button(permalink_url)])
 
         # If there are more tracks than we're showing, add note
         if len(playlist_tracks) > max_tracks_to_show:
@@ -1978,9 +1858,6 @@ async def process_download_queue():
             track_id = item["track_id"]
             inline_message_id = item["inline_message_id"]
             search_query = item.get("search_query")
-
-            # Set the processing status
-            await set_processing_status(inline_message_id)
 
             # Start the download task
             task = asyncio.create_task(

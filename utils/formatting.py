@@ -71,17 +71,17 @@ def format_track_info_caption(track_info: Dict, bot_username: str) -> str:
     # Add Spotify link if available
     if "spotify_url" in track_info:
         spotify_url_no_embed = track_info["spotify_url"].replace("://", "://\u200c")
-        caption += f" | ✷ <a href='{spotify_url_no_embed}'>Spotify</a>"
+        caption += f" ❀ <a href='{spotify_url_no_embed}'>Spotify</a>"
 
     # Add artwork link if available
     if artwork_url:
         # Convert to high resolution
         artwork_url = get_high_quality_artwork_url(artwork_url)
         artwork_url_no_embed = artwork_url.replace("://", "://\u200c")
-        caption += f" | ꕤ <a href='{artwork_url_no_embed}'>Artwork</a>"
+        caption += f" ꕤ <a href='{artwork_url_no_embed}'>Cover</a>"
 
     # Add bot username
-    caption += f" | ✿ @{bot_username}"
+    caption += f" 𝄞 @{bot_username}"
 
     return caption
 
