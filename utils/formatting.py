@@ -66,11 +66,12 @@ def format_track_info_caption(track_info: Dict, bot_username: str) -> str:
     # Create initial caption with SoundCloud track link
     # Using zero-width space (\u200c) inside the URL to prevent embedding while keeping it clickable
     permalink_url_no_embed = permalink_url.replace("://", "://\u200c")
-    caption = f"♫ <a href='{permalink_url_no_embed}'>Link</a>"
+    caption = f"𝄞 <a href='{permalink_url_no_embed}'>Link</a>"
 
-    # Add Spotify link if available
+    # Add Spotify link if available (positioned after the SoundCloud link)
     if "spotify_url" in track_info:
-        spotify_url_no_embed = track_info["spotify_url"].replace("://", "://\u200c")
+        spotify_url = track_info["spotify_url"]
+        spotify_url_no_embed = spotify_url.replace("://", "://\u200c")
         caption += f" ❀ <a href='{spotify_url_no_embed}'>Spotify</a>"
 
     # Add artwork link if available
@@ -81,7 +82,7 @@ def format_track_info_caption(track_info: Dict, bot_username: str) -> str:
         caption += f" ꕤ <a href='{artwork_url_no_embed}'>Cover</a>"
 
     # Add bot username
-    caption += f" 𝄞 @{bot_username}"
+    caption += f" ♬ @{bot_username}"
 
     return caption
 

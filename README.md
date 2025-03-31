@@ -16,6 +16,9 @@ A Telegram bot that allows users to search for and download tracks from SoundClo
 - 🎵 Spotify track link conversion and search
 - ⚠️ Detailed error handling with clear messages
 - ⏳ Clear "Processing..." status indication when downloading
+- ✂️ Automated silence detection and removal from tracks
+- 📝 Intelligent artist extraction from track titles
+- 🧹 "Skip to X" timestamp removal from titles
 
 ## Setup
 

@@ -3,6 +3,7 @@ import re
 import time
 import asyncio
 import pathlib
+import tempfile
 import unicodedata
 from typing import Any, Dict, List, Tuple, Union, Optional
 from urllib.parse import urlparse
@@ -10,7 +11,7 @@ from urllib.parse import urlparse
 import aiohttp
 import mutagen
 import aiofiles
-from mutagen.id3 import ID3, APIC
+from mutagen.id3 import ID3
 
 from utils import get_high_quality_artwork_url
 from config import (
@@ -589,7 +590,6 @@ async def download_hls_audio(url: str, filepath: str) -> bool:
     try:
         # Create temporary directory for segments
         import shutil
-        import tempfile
 
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_output = os.path.join(temp_dir, "output.mp3")
@@ -687,36 +687,6 @@ async def download_audio_fallback(url: str, filepath: str) -> bool:
     except Exception as e:
         logger.error(f"Fallback download failed: {type(e).__name__}: {e}")
         return False
-
-
-def sanitize_filename(filename: str) -> str:
-    """
-    Create a safe filename from a string.
-
-    Args:
-        filename: The original filename
-
-    Returns:
-        str: A sanitized filename
-    """
-    # First, normalize unicode characters
-    filename = (
-        unicodedata.normalize("NFKD", filename)
-        .encode("ASCII", "ignore")
-        .decode("ASCII")
-    )
-
-    # Replace invalid characters with underscores
-    filename = re.sub(r'[\\/*?:"<>|]', "_", filename)
-
-    # Remove any leading/trailing spaces and dots
-    filename = filename.strip(". ")
-
-    # Limit length
-    if len(filename) > 200:
-        filename = filename[:200]
-
-    return filename
 
 
 def extract_artist_title(title: str) -> Tuple[str, str]:
@@ -1102,37 +1072,6 @@ async def add_id3_tags(filepath: str, track_data: dict) -> None:
                     )
                 )
 
-            # Get artwork URL and download artwork
-            artwork_url = track_data.get("artwork_url", "")
-            if artwork_url:
-                # Convert to high-quality version
-                artwork_url = get_high_quality_artwork_url(artwork_url)
-
-                # Download artwork
-                artwork_data = await download_artwork(artwork_url)
-
-                if artwork_data:
-                    # Add artwork to ID3 tags
-                    mime_type = (
-                        "image/jpeg"
-                        if artwork_url.endswith(".jpg") or artwork_url.endswith(".jpeg")
-                        else "image/png"
-                    )
-                    id3.add(
-                        APIC(
-                            encoding=3,  # UTF-8
-                            mime=mime_type,
-                            type=3,  # Cover (front)
-                            desc="Cover",
-                            data=artwork_data,
-                        )
-                    )
-                    logger.info(
-                        f"Artwork embedded in ID3 tags: {len(artwork_data)} bytes"
-                    )
-                else:
-                    logger.warning("Failed to download artwork for embedding")
-
             # Save ID3 tags
             id3.save(v2_version=3)
 
@@ -1169,6 +1108,23 @@ async def download_track(track_id: str, bot_user: Dict[str, Any]) -> Dict[str, A
     except Exception as e:
         logger.error(f"Exception during track data retrieval: {e}")
         return {"success": False, "error": f"Error retrieving track data: {str(e)}"}
+
+    # Check for waveform URL and analyze for silence if available
+    waveform_url = track_data.get("waveform_url")
+    silence_analysis = await analyze_waveform_for_silence(waveform_url)
+
+    if silence_analysis["has_silence"]:
+        logger.info(
+            f"Silence detected in track: {silence_analysis['silence_percentage']:.1f}% is silent"
+        )
+        if len(silence_analysis["silence_sections"]) > 0:
+            logger.info(
+                f"Found {len(silence_analysis['silence_sections'])} significant silence sections"
+            )
+            for i, section in enumerate(silence_analysis["silence_sections"]):
+                logger.info(
+                    f"  Section {i+1}: {section['start']:.1f}% - {section['end']:.1f}% ({section['percentage']:.1f}% of track)"
+                )
 
     # Original title
     original_title = track_data.get("title", "Unknown")
@@ -1227,6 +1183,8 @@ async def download_track(track_id: str, bot_user: Dict[str, Any]) -> Dict[str, A
             if DEBUG_EXTRACTIONS:
                 logger.info(f"DOWNLOAD: Title cleaned: '{title}' -> '{cleaned_title}'")
             title = cleaned_title
+            # Update the extraction info with cleaned title
+            track_data["_extracted_info"]["final_title"] = title
         else:
             if DEBUG_EXTRACTIONS:
                 logger.info("DOWNLOAD: Title unchanged after cleaning")
@@ -1253,37 +1211,24 @@ async def download_track(track_id: str, bot_user: Dict[str, Any]) -> Dict[str, A
         "final_title": title,
     }
 
-    # Generate safe filename using ONLY the title (not artist)
-    safe_filename = sanitize_filename(title)
-    if DEBUG_DOWNLOAD:
-        logger.debug(f"Generated filename: {safe_filename}")
+    # Remove "skip to X" time markers from title using regex
+    skip_to_pattern = re.compile(
+        r"[\(\[\*!\s]*(?:skip(?:\s+to)?\s+\d+(?::\d+|[mM]\d*|\s+min(?:ute)?s?)?)[\)\]\*!\s]*",
+        re.IGNORECASE,
+    )
+    cleaned_title = skip_to_pattern.sub("", title).strip()
+    if cleaned_title != title:
+        logger.info(f"Removed 'skip' marker from title: '{title}' -> '{cleaned_title}'")
+        title = cleaned_title
+        # Update the extraction info with cleaned title
+        track_data["_extracted_info"]["final_title"] = title
 
-    logger.info(f"Final filename: '{safe_filename}'")
+    # Create a temporary file with .mp3 extension
+    temp_file = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
+    filepath = temp_file.name
+    temp_file.close()
 
-    # Define file path
-    filepath = os.path.join(DOWNLOAD_PATH, f"{safe_filename}.mp3")
-
-    # Check if file already exists
-    if os.path.exists(filepath):
-        file_size = os.path.getsize(filepath) / (1024.0 * 1024.0)  # Convert to MB
-        mod_time = os.path.getmtime(filepath)
-        logger.info(
-            f"File already exists: {filepath} ({file_size:.2f} MB, modified: {time.ctime(mod_time)})"
-        )
-
-        # Get high-quality artwork URL for Telegram
-        artwork_url = track_data.get("artwork_url", "")
-        if artwork_url:
-            artwork_url = get_high_quality_artwork_url(artwork_url)
-            logger.info(f"Using high-quality artwork URL: {artwork_url}")
-
-        return {
-            "success": True,
-            "filepath": filepath,
-            "artwork_url": artwork_url,
-            "track_data": track_data,
-            "cached": True,
-        }
+    logger.info(f"Created temporary file: {filepath}")
 
     # Get download URL
     download_url = await get_download_url(track_data)
@@ -1303,6 +1248,11 @@ async def download_track(track_id: str, bot_user: Dict[str, Any]) -> Dict[str, A
     download_success = await download_audio(download_url, filepath)
     if not download_success:
         logger.error(f"Failed to download audio file for track ID: {track_id}")
+        # Clean up the temp file
+        try:
+            os.remove(filepath)
+        except Exception as e:
+            logger.error(f"Error removing temp file after failed download: {e}")
         return {
             "success": False,
             "message": "Failed to download audio file",
@@ -1338,6 +1288,8 @@ async def download_track(track_id: str, bot_user: Dict[str, Any]) -> Dict[str, A
         "message": "Track downloaded successfully",
         "track_data": track_data,
         "artwork_url": artwork_url,
+        "cached": False,  # Always mark as non-cached since we're using temp files
+        "silence_analysis": silence_analysis,  # Include silence analysis results
     }
 
 
@@ -1538,6 +1490,21 @@ def get_track_info(track: dict) -> dict:
             f"TRACK {track_id}: Using title as display title: '{display_title}'"
         )
 
+    # Remove "skip to X" time markers from title and display_title
+    skip_to_pattern = re.compile(
+        r"[\(\[\*!\s]*(?:skip(?:\s+to)?\s+\d+(?::\d+|[mM]\d*|\s+min(?:ute)?s?)?)[\)\]\*!\s]*",
+        re.IGNORECASE,
+    )
+
+    cleaned_title = skip_to_pattern.sub("", title).strip()
+    if cleaned_title != title:
+        if DEBUG_EXTRACTIONS:
+            logger.info(
+                f"TRACK {track_id}: Removed 'skip' marker from title: '{title}' -> '{cleaned_title}'"
+            )
+        title = cleaned_title
+        display_title = cleaned_title
+
     # Get artwork URL
     artwork_url = track.get("artwork_url", "")
 
@@ -1586,6 +1553,9 @@ def get_track_info(track: dict) -> dict:
         "is_snipped": is_snipped,
         "policy": track.get("policy"),
         "monetization_model": track.get("monetization_model"),
+        "waveform_url": track.get(
+            "waveform_url"
+        ),  # Add waveform URL for silence detection
     }
 
 
@@ -1726,7 +1696,6 @@ async def cleanup_files(filepath: str) -> None:
     Args:
         filepath: Path to the audio file
     """
-    logger.info(f"Cleaning up temporary files: {filepath}")
 
     # Delete audio file
     if filepath and os.path.exists(filepath):
@@ -2013,3 +1982,129 @@ async def get_stream_url(api_url: str) -> Optional[str]:
 
     logger.error(f"All {max_retries} attempts to get stream URL failed")
     return None
+
+
+async def analyze_waveform_for_silence(waveform_url: str) -> Dict[str, Any]:
+    """
+    Fetch and analyze waveform data from SoundCloud to detect silence.
+
+    Args:
+        waveform_url: URL to the waveform JSON data
+
+    Returns:
+        Dict containing silence analysis:
+            - has_silence: Whether significant silence was detected
+            - silence_percentage: Percentage of the track that is silent
+            - silence_sections: List of sections with silence (start and end percentages)
+    """
+    if not waveform_url:
+        logger.info("No waveform URL available for silence detection")
+        return {"has_silence": False, "silence_percentage": 0, "silence_sections": []}
+
+    try:
+        logger.info(f"Fetching waveform data from: {waveform_url}")
+        async with aiohttp.ClientSession() as session:
+            async with session.get(waveform_url) as response:
+                if response.status != 200:
+                    logger.error(
+                        f"Failed to fetch waveform data: HTTP {response.status}"
+                    )
+                    return {
+                        "has_silence": False,
+                        "silence_percentage": 0,
+                        "silence_sections": [],
+                    }
+
+                waveform_data = await response.json()
+
+                # Check if we have samples data
+                if "samples" not in waveform_data:
+                    logger.error("No samples found in waveform data")
+                    return {
+                        "has_silence": False,
+                        "silence_percentage": 0,
+                        "silence_sections": [],
+                    }
+
+                samples = waveform_data["samples"]
+                logger.info(f"Analyzing {len(samples)} waveform samples")
+
+                # Define silence threshold (typically 0 is complete silence)
+                silence_threshold = (
+                    1  # Anything below or equal to this is considered silence
+                )
+
+                # Count silence samples
+                silence_count = sum(
+                    1 for sample in samples if sample <= silence_threshold
+                )
+                silence_percentage = (silence_count / len(samples)) * 100
+
+                # Find continuous silence sections (at least 3% of the track)
+                min_section_size = max(
+                    1, int(len(samples) * 0.03)
+                )  # At least 3% of track
+                silence_sections = []
+                current_section = None
+
+                for i, sample in enumerate(samples):
+                    position_percentage = (i / len(samples)) * 100
+
+                    if sample <= silence_threshold:
+                        # Start or continue silence section
+                        if current_section is None:
+                            current_section = {
+                                "start": position_percentage,
+                                "samples": 1,
+                            }
+                        else:
+                            current_section["samples"] += 1
+                    elif current_section is not None:
+                        # End of silence section
+                        if current_section["samples"] >= min_section_size:
+                            # Only record significant silence sections
+                            current_section["end"] = position_percentage
+                            current_section["percentage"] = (
+                                current_section["samples"] / len(samples)
+                            ) * 100
+                            silence_sections.append(current_section)
+                        current_section = None
+
+                # Check if last section is silence and needs to be closed
+                if (
+                    current_section is not None
+                    and current_section["samples"] >= min_section_size
+                ):
+                    current_section["end"] = 100.0
+                    current_section["percentage"] = (
+                        current_section["samples"] / len(samples)
+                    ) * 100
+                    silence_sections.append(current_section)
+
+                # Only consider significant silence
+                has_silence = silence_percentage >= 5.0 or len(silence_sections) > 0
+
+                # Clean up silence sections format for return
+                formatted_sections = []
+                for section in silence_sections:
+                    formatted_sections.append(
+                        {
+                            "start": section["start"],
+                            "end": section["end"],
+                            "percentage": section["percentage"],
+                        }
+                    )
+
+                logger.info(
+                    f"Silence analysis complete: {silence_percentage:.1f}% silent, {len(formatted_sections)} sections"
+                )
+
+                return {
+                    "has_silence": has_silence,
+                    "silence_percentage": silence_percentage,
+                    "silence_sections": formatted_sections,
+                }
+
+    except Exception as e:
+        logger.error(f"Error analyzing waveform data: {e}")
+        return {"has_silence": False, "silence_percentage": 0, "silence_sections": []}

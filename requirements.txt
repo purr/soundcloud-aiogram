@@ -6,3 +6,5 @@ mutagen
 httpx
 loguru
 pillow
+pydub
+tempfile

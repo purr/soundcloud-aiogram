@@ -11,6 +11,27 @@ download_status_button = InlineKeyboardButton(
 )
 
 
+def download_progress_button(status: str = "downloading"):
+    """Create a download progress button with different statuses
+
+    Args:
+        status: Status to display (downloading, removing_silence)
+
+    Returns:
+        InlineKeyboardButton with appropriate text
+    """
+    if status == "removing_silence":
+        return InlineKeyboardButton(
+            text="✂️ Removing silence...",
+            callback_data="download_status",
+        )
+    else:
+        return InlineKeyboardButton(
+            text="⬇️ Downloading...",
+            callback_data="download_status",
+        )
+
+
 def try_again_button(track_id: str):
     return InlineKeyboardButton(
         text="🔄 Try Again",

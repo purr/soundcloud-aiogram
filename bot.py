@@ -45,8 +45,7 @@ from helpers import (
     get_track_info,
     get_tracks_batch,
     search_soundcloud,
-    create_soundcloud_search_query,
-    extract_metadata_from_spotify_url,
+    analyze_waveform_for_silence,
 )
 from predefined import (
     artist_button,
@@ -54,50 +53,22 @@ from predefined import (
     soundcloud_button,
     start_chat_button,
     download_status_button,
+    download_progress_button,
     example_inline_search_button,
 )
 from utils.logger import get_logger
+from helpers.spotify import (
+    create_soundcloud_search_query,
+    extract_metadata_from_spotify_url,
+)
 from helpers.workers import (
     send_audio_file,
+    handle_system_error,
+    is_permission_error,
     handle_download_failure,
     validate_downloaded_track,
     update_inline_message_with_audio,
 )
-
-
-# Define a function to classify errors
-def is_permission_error(error):
-    """
-    Determine if an error is related to permissions (bot was blocked, not started, etc.)
-    or is a system/network error.
-
-    Args:
-        error: The exception object or error message
-
-    Returns:
-        bool: True if it's a permission error, False if it's a system error
-    """
-    error_text = str(error).lower()
-
-    # Check for common permission error messages
-    permission_error_phrases = [
-        "forbidden",
-        "bot was blocked",
-        "bot was not found",
-        "chat not found",
-        "user is deactivated",
-        "not enough rights",
-        "timed out",
-        "waiting for an ack",
-        "bot can't initiate conversation",
-        "user not found",
-        "access denied",
-        "message not found",
-        "chat access required",
-    ]
-
-    return any(phrase in error_text for phrase in permission_error_phrases)
-
 
 # Configure logging
 logger = get_logger(__name__)
@@ -122,6 +93,9 @@ inline_spotify_urls: Dict[str, str] = {}
 # Create a download queue
 download_queue = asyncio.Queue()
 
+# Store search queries for track IDs
+track_search_queries: Dict[str, str] = {}
+
 
 @router.message(CommandStart())
 async def cmd_start(message: Message):
@@ -145,6 +119,8 @@ async def cmd_start(message: Message):
         f"• One-click track downloading from SoundCloud\n"
         f"• Highest quality audio with proper ID3 tags\n"
         f"• Artist name extraction from track titles\n"
+        f"• Silence detection and removal from audio\n"
+        f'• "Skip to" timestamps removal from titles\n'
         f"• Direct links to the track and cover art\n"
         f"• Clean, minimalist interface\n\n"
         f"❀ <b>Supported content:</b>\n"
@@ -202,7 +178,7 @@ async def inline_search(query: InlineQuery):
     search_text = query.query.strip()
     username = (
         f"{query.from_user.first_name} {query.from_user.last_name if query.from_user.last_name else ''}"
-        f"@{query.from_user.username if query.from_user.username else ''} (id:{query.from_user.id})"
+        f" @{query.from_user.username if query.from_user.username else ''} (id:{query.from_user.id})"
     )
 
     logger.info(f"Inline search query: {search_text} by {username}")
@@ -357,7 +333,7 @@ async def inline_search(query: InlineQuery):
                     description="No available tracks in this playlist",
                     input_message_content=InputTextMessageContent(
                         message_text=f"🎵 <b>SoundCloud Playlist:</b> {html.escape(playlist_title)}\n"
-                        f"<b>By:</b> {html.escape(user)}\n"
+                        f"<b>By</b> {html.escape(user)}\n"
                         f"<b>Tracks:</b> {track_count}\n\n"
                         f"<i>This playlist either has no tracks or all tracks are private/unavailable.</i>"
                     ),
@@ -541,7 +517,7 @@ async def debounced_search(search_text: str, query: InlineQuery):
             duration_str = track_info.get("duration", "")
 
             # Prepare detailed description
-            description = f"By: {track_info['artist']}"
+            description = f"By {track_info['artist']}"
             if duration_str:
                 description += f" • {duration_str}"
             if track_info.get("genre"):
@@ -612,6 +588,13 @@ async def chosen_inline_result_handler(chosen_result: ChosenInlineResult):
     # Store the user ID for this inline message ID
     inline_message_users[chosen_result.inline_message_id] = chosen_result.from_user.id
 
+    # Store the search query for this track ID
+    if chosen_result.query:
+        track_search_queries[track_id] = chosen_result.query
+        logger.info(
+            f"Stored search query for track ID {track_id}: {chosen_result.query}"
+        )
+
     # Add this message to the download queue
     # This effectively starts the download
     await download_queue.put(
@@ -645,6 +628,44 @@ async def download_and_update_inline_message(
             "id": bot_info.id,
             "name": bot_info.full_name,
         }
+
+        # Update the button to show downloading status
+        try:
+            await bot.edit_message_reply_markup(
+                inline_message_id=inline_message_id,
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[[download_progress_button()]]
+                ),
+            )
+        except Exception as e:
+            logger.warning(f"Error updating button to downloading status: {e}")
+
+        # Get track info to check waveform before downloading
+        track_data = await get_track(track_id)
+        if track_data and "waveform_url" in track_data:
+            # Analyze waveform for silence
+            silence_analysis = await analyze_waveform_for_silence(
+                track_data.get("waveform_url")
+            )
+
+            # If silence is detected, update the button
+            if silence_analysis["has_silence"]:
+                logger.info(
+                    f"Silence detected in waveform: {silence_analysis['silence_percentage']:.1f}% silent"
+                )
+                try:
+                    await bot.edit_message_reply_markup(
+                        inline_message_id=inline_message_id,
+                        reply_markup=InlineKeyboardMarkup(
+                            inline_keyboard=[
+                                [download_progress_button("removing_silence")]
+                            ]
+                        ),
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Error updating button to silence detected status: {e}"
+                    )
 
         # Download the track in the background
         logger.info(
@@ -696,6 +717,7 @@ async def download_and_update_inline_message(
                     track_info=track_info,
                     error_message=error_message,
                     search_query=search_query,
+                    track_search_queries_dict=track_search_queries,
                 )
                 return
 
@@ -750,6 +772,7 @@ async def download_and_update_inline_message(
                                 track_info=track_info,
                                 error_message="Failed to update inline message with audio",
                                 search_query=search_query,
+                                track_search_queries_dict=track_search_queries,
                             )
                     else:
                         logger.error(
@@ -785,6 +808,7 @@ async def download_and_update_inline_message(
                             error_message=f"System error: {str(dm_err)[:100]}",
                             search_query=search_query,
                             filepath=filepath,
+                            track_search_queries_dict=track_search_queries,
                         )
             else:
                 # User doesn't have DMs open, show chat access needed message
@@ -805,6 +829,7 @@ async def download_and_update_inline_message(
                 track_info=track_info,
                 error_message=error_message,
                 search_query=search_query,
+                track_search_queries_dict=track_search_queries,
             )
 
     except Exception as e:
@@ -845,87 +870,19 @@ async def download_and_update_inline_message(
             )
 
 
-async def handle_system_error(
-    inline_message_id,
-    track_id,
-    track_info,
-    bot_user,
-    filepath=None,
-    error_message="System error occurred",
-    search_query=None,
-):
-    """Handle system errors during download or processing.
-
-    This differs from permission errors - these are actual system/network issues that the user can't fix
-    by simply starting the bot.
-    """
-    try:
-        # Create a caption that explains this is a system error, not a permissions issue
-        final_caption = "⚠️ <b>System Error</b>\n\n"
-
-        # Use zero-width space to prevent URL embedding
-        permalink_url_no_embed = track_info["permalink_url"].replace("://", "://\u200c")
-        final_caption += f"♫ <a href='{permalink_url_no_embed}'><b>{html.escape(track_info['display_title'])}</b> - <b>{html.escape(track_info['artist'])}</b></a>\n\n"
-
-        final_caption += f"<b>Error details:</b> {error_message}\n\n"
-
-        # Include the search query or URL if provided
-        if search_query:
-            final_caption += (
-                f"<b>Query:</b> <code>{html.escape(search_query)}</code>\n\n"
-            )
-
-        final_caption += "This appears to be a technical error with the bot or server, not a permissions issue. "
-        final_caption += "You can try again later or download directly from SoundCloud."
-
-        # Create keyboard with SoundCloud link
-        markup = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    soundcloud_button(track_info["permalink_url"]),
-                ],
-                [try_again_button(track_id)],
-            ]
-        )
-
-        await bot.edit_message_caption(
-            inline_message_id=inline_message_id,
-            caption=final_caption,
-            reply_markup=markup,
-        )
-    except Exception as e:
-        logger.error(f"Error updating system error caption: {e}")
-        try:
-            # Simpler fallback if the first attempt fails
-            simple_caption = "⚠️ <b>System Error:</b> An error occurred while processing your request. Please try again later."
-            if search_query:
-                simple_caption += (
-                    f"\n\n<b>Query:</b> <code>{html.escape(search_query)}</code>"
-                )
-
-            await bot.edit_message_caption(
-                inline_message_id=inline_message_id,
-                caption=simple_caption,
-                reply_markup=InlineKeyboardMarkup(
-                    inline_keyboard=[[try_again_button(track_id)]]
-                ),
-            )
-        except Exception as e:
-            logger.error(f"Final system error fallback failed: {e}")
-    finally:
-        # Clean up files if they exist
-        if filepath:
-            await cleanup_files(
-                filepath,
-            )
-
-
 async def fallback_to_direct_message(
     inline_message_id, track_id, track_info, bot_user, search_query=None
 ):
     """Fallback to direct message approach if inline update fails due to permission issues"""
     filepath = None
     try:
+        # Store the search query for this track ID if available
+        if search_query:
+            track_search_queries[track_id] = search_query
+            logger.info(
+                f"Stored search query in fallback for track ID {track_id}: {search_query}"
+            )
+
         # Get the artwork URL for a hyperlink
         artwork_url = track_info.get("artwork_url") or ""
         if artwork_url:
@@ -938,6 +895,12 @@ async def fallback_to_direct_message(
         # Use zero-width space to prevent URL embedding
         permalink_url_no_embed = track_info["permalink_url"].replace("://", "://\u200c")
         final_caption += f"♫ <a href='{permalink_url_no_embed}'>{html.escape(track_info['display_title'])} - {html.escape(track_info['artist'])}</a>\n\n"
+
+        # Add Spotify URL if available
+        if "spotify_url" in track_info:
+            spotify_url = track_info["spotify_url"]
+            spotify_url_no_embed = spotify_url.replace("://", "://\u200c")
+            final_caption += f"🎧 <b>Spotify:</b> <a href='{spotify_url_no_embed}'>{html.escape(spotify_url)}</a>\n\n"
 
         # Include the search query if provided
         if search_query:
@@ -981,6 +944,13 @@ async def fallback_to_direct_message(
         try:
             # Simpler fallback if the first attempt fails
             simple_caption = f"🔒 <b>Permission Required:</b> Please message @{bot_user['username']} first (/start) before downloading."
+
+            # Add Spotify URL in simpler fallback too
+            if "spotify_url" in track_info:
+                spotify_url = track_info["spotify_url"]
+                spotify_url_no_embed = spotify_url.replace("://", "://\u200c")
+                simple_caption += f"\n\n🎧 <b>Spotify:</b> <a href='{spotify_url_no_embed}'>{html.escape(spotify_url)}</a>"
+
             if search_query:
                 simple_caption += (
                     f"\n\n<b>Query:</b> <code>{html.escape(search_query)}</code>"
@@ -1100,6 +1070,7 @@ async def download_and_send(message: Message, track_id: str, spotify_url=None):
                     message_id=message.message_id,
                     track_info=track_info,
                     error_message="Failed to send audio file",
+                    track_search_queries_dict=track_search_queries,
                 )
 
             # Clean up files if needed (not cached)
@@ -1139,112 +1110,22 @@ async def download_and_send(message: Message, track_id: str, spotify_url=None):
         )
 
 
-@router.callback_query(F.data.startswith("details:"))
-async def track_details(callback: CallbackQuery):
-    """Handler for track details callback"""
-    track_id = callback.data.split(":", 1)[1]
-
-    try:
-        # Check if message exists - this is crucial
-        if callback.message is None:
-            logger.warning(f"Callback message is None for track_id: {track_id}")
-            await callback.answer(
-                "Cannot display details in this message. Try selecting the track again.",
-                show_alert=True,
-            )
-            return
-
-        # Get track details from SoundCloud
-        results = await search_soundcloud(f"tracks:{track_id}")
-        tracks = filter_tracks(results)
-
-        if not tracks:
-            await callback.answer("Track information not found", show_alert=True)
-            return
-
-        track = tracks[0]
-        track_info = get_track_info(track)
-
-        # Format created date
-        created_at = track.get("created_at", "")
-        if created_at:
-            try:
-                dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-                created_date = dt.strftime("%B %d, %Y")
-            except ValueError:
-                created_date = "Unknown date"
-        else:
-            created_date = "Unknown date"
-
-        # Build detailed information
-        details = (
-            f"♫ <b>{html.escape(track_info['display_title'])}</b>\n\n"
-            f"👤 Artist: <b>{html.escape(track_info['artist'])}</b>\n"
-            f"⏱ Duration: {track_info['duration']}\n"
-            f"📅 Released: {created_date}\n"
-            f"▶️ Plays: {track_info['plays']:,}\n"
-            f"❤️ Likes: {track_info['likes']:,}\n"
-        )
-
-        if track_info["genre"]:
-            details += f"🎭 Genre: {html.escape(track_info['genre'])}\n"
-
-        if track_info["description"]:
-            details += (
-                f"\n📝 Description: {html.escape(track_info['description'][:200])}"
-            )
-            if len(track_info["description"]) > 200:
-                details += "..."
-
-        # Get bot username for attribution
-        bot_info = await bot.get_me()
-
-        # Use zero-width space to prevent URL embedding
-        permalink_url_no_embed = track_info["permalink_url"].replace("://", "://\u200c")
-        details += (
-            f"\n\n<a href='{permalink_url_no_embed}'>Listen on SoundCloud</a>\n"
-            f"Download via @{bot_info.username}"
-        )
-
-        # Answer with track details
-        try:
-            await callback.message.edit_text(
-                details,
-                reply_markup=InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [
-                            soundcloud_button(track_info["permalink_url"]),
-                            artist_button(
-                                track_info["user"]["url"]
-                                + f"?urn={track_info['user']['urn']}"
-                            ),
-                        ],
-                        [
-                            InlineKeyboardButton(
-                                text="⬇️ Download Track",
-                                callback_data=f"download:{track_id}",
-                            ),
-                        ],
-                    ]
-                ),
-            )
-            await callback.answer()
-        except Exception as edit_error:
-            logger.error(f"Error editing message: {edit_error}")
-            await callback.answer(
-                "Cannot update message. The message may be too old.", show_alert=True
-            )
-
-    except Exception as e:
-        logger.error(f"Error in track details: {e}")
-        await callback.answer("Error fetching track details", show_alert=True)
-
-
 @router.callback_query(F.data.startswith("download:"))
 async def download_callback(callback: CallbackQuery):
     """Handle download button click"""
     track_id = callback.data.split(":", 1)[1]
-    search_query = None  # Initialize search_query to avoid undefined variable errors
+
+    # Try to get the search query from the stored track search queries
+    search_query = track_search_queries.get(track_id)
+    if search_query:
+        logger.info(
+            f"Retrieved stored search query for track ID {track_id}: {search_query}"
+        )
+    else:
+        search_query = (
+            None  # Initialize search_query to avoid undefined variable errors
+        )
+        logger.info(f"No stored search query found for track ID: {track_id}")
 
     try:
         logger.info(f"Download callback initiated for track ID: {track_id}")
@@ -1612,6 +1493,7 @@ async def deep_link_start(message: Message):
                         message_id=message.message_id,
                         track_info=track_info,
                         error_message="Failed to send audio file",
+                        track_search_queries_dict=track_search_queries,
                     )
 
             else:
@@ -1736,7 +1618,7 @@ async def handle_soundcloud_link(message: Message):
         # Create a message with playlist info
         playlist_info = "🎵 <b>SoundCloud Playlist</b>\n\n"
         playlist_info += f"<b>Title:</b> {html.escape(playlist_title)}\n"
-        playlist_info += f"<b>By:</b> {html.escape(user)}\n"
+        playlist_info += f"<b>By</b> {html.escape(user)}\n"
         playlist_info += f"<b>Tracks:</b> {track_count}\n\n"
 
         # Create inline keyboard with tracks

@@ -31,3 +31,7 @@ ENV/
 # OS specific
 .DS_Store
 Thumbs.db 
+
+# Ignore all files in the temp directory
+temp
+downloads

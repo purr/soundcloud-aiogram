@@ -1,6 +1,7 @@
 import io
 import os
 import html
+import time
 import logging
 from typing import Any, Dict, Tuple, Optional
 
@@ -156,6 +157,7 @@ async def handle_download_failure(
     track_info: Dict[str, Any],
     error_message: str,
     search_query: Optional[str] = None,
+    track_search_queries_dict: Optional[Dict[str, str]] = None,
 ) -> None:
     """Handle download failure scenarios with appropriate messaging.
 
@@ -165,14 +167,33 @@ async def handle_download_failure(
         track_info: Track metadata
         error_message: Error message to display
         search_query: Optional search query that led to this download
+        track_search_queries_dict: Optional dictionary to store track ID to search query mapping
     """
     try:
+        # Store the search query for this track ID if available
+        if (
+            search_query
+            and "id" in track_info
+            and track_search_queries_dict is not None
+        ):
+            track_id = track_info["id"]
+            track_search_queries_dict[track_id] = search_query
+            logger.info(
+                f"Stored search query in handle_download_failure for track ID {track_id}: {search_query}"
+            )
+
         # Format the error message
         failure_text = format_error_caption(
             "Download failed: " + error_message,
             track_info,
             (await bot.get_me()).username,
         )
+
+        # Add Spotify URL if available
+        if "spotify_url" in track_info:
+            spotify_url = track_info["spotify_url"]
+            spotify_url_no_embed = spotify_url.replace("://", "://\u200c")
+            failure_text += f"\n\n🎧 <b>Spotify:</b> <a href='{spotify_url_no_embed}'>{html.escape(spotify_url)}</a>"
 
         # Include the search query if provided
         if search_query:
@@ -195,6 +216,7 @@ async def handle_system_error(
     error_message: str,
     search_query: Optional[str] = None,
     filepath: Optional[str] = None,
+    track_search_queries_dict: Optional[Dict[str, str]] = None,
 ) -> None:
     """Handle system-level errors during download or processing.
 
@@ -205,12 +227,31 @@ async def handle_system_error(
         error_message: Error message to display
         search_query: Optional search query
         filepath: Optional filepath to clean up
+        track_search_queries_dict: Optional dictionary to store track ID to search query mapping
     """
     try:
+        # Store the search query for this track ID if available
+        if (
+            search_query
+            and "id" in track_info
+            and track_search_queries_dict is not None
+        ):
+            track_id = track_info["id"]
+            track_search_queries_dict[track_id] = search_query
+            logger.info(
+                f"Stored search query in handle_system_error for track ID {track_id}: {search_query}"
+            )
+
         final_caption = "⚠️ <b>System Error</b>\n\n"
         permalink_url_no_embed = track_info["permalink_url"].replace("://", "://\u200c")
         final_caption += f"♫ <a href='{permalink_url_no_embed}'><b>{html.escape(track_info['title'])}</b> - <b>{html.escape(track_info['artist'])}</b></a>\n\n"
         final_caption += f"<b>Error details:</b> {error_message}\n\n"
+
+        # Add Spotify URL if available
+        if "spotify_url" in track_info:
+            spotify_url = track_info["spotify_url"]
+            spotify_url_no_embed = spotify_url.replace("://", "://\u200c")
+            final_caption += f"🎧 <b>Spotify:</b> <a href='{spotify_url_no_embed}'>{html.escape(spotify_url)}</a>\n\n"
 
         if search_query:
             final_caption += (
@@ -238,6 +279,13 @@ async def handle_system_error(
         logger.error(f"Error updating system error caption: {e}")
         try:
             simple_caption = "⚠️ <b>System Error:</b> An error occurred while processing your request. Please try again later."
+
+            # Add Spotify URL in simple fallback too
+            if "spotify_url" in track_info:
+                spotify_url = track_info["spotify_url"]
+                spotify_url_no_embed = spotify_url.replace("://", "://\u200c")
+                simple_caption += f"\n\n🎧 <b>Spotify:</b> <a href='{spotify_url_no_embed}'>{html.escape(spotify_url)}</a>"
+
             if search_query:
                 simple_caption += (
                     f"\n\n<b>Query:</b> <code>{html.escape(search_query)}</code>"
@@ -331,6 +379,165 @@ async def download_and_resize_image(
     return img_byte_arr.getvalue()
 
 
+async def detect_and_remove_silence(
+    filepath: str, threshold_db: float = -40.0, min_silence_duration: int = 2000
+) -> str:
+    """
+    Aggressively detect and remove silence from audio files.
+
+    This function removes:
+    1. All silence at the beginning and end of the track
+    2. Long silence gaps (including extreme cases like 1-minute silent sections)
+
+    Args:
+        filepath: Path to the audio file
+        threshold_db: Threshold in dB below which audio is considered silence
+        min_silence_duration: Minimum silence duration to detect in milliseconds
+
+    Returns:
+        str: Path to the processed file (either the original if no silence or a new temp file)
+    """
+    try:
+        import os
+        import logging
+        import tempfile
+
+        from pydub import AudioSegment
+        from pydub.silence import detect_nonsilent
+
+        logger = logging.getLogger(__name__)
+
+        # Skip processing if file doesn't exist
+        if not os.path.exists(filepath):
+            logger.warning(f"File not found for silence detection: {filepath}")
+            return filepath
+
+        # Load the audio file
+        logger.info(f"Analyzing audio for silence: {filepath}")
+        start_time = time.time()
+        audio = AudioSegment.from_file(filepath)
+
+        # Check duration
+        duration_ms = len(audio)
+        logger.info(
+            f"Audio duration: {duration_ms}ms, loaded in {time.time() - start_time:.2f}s"
+        )
+
+        if duration_ms < 2000:  # Very short audio
+            logger.info("Audio too short for silence detection, skipping")
+            return filepath
+
+        # Use direct approach - find all non-silent segments
+        # This is more aggressive for finding extended silences
+        silence_detect_start = time.time()
+
+        # Detect all non-silent parts with aggressive settings
+        nonsilent_ranges = detect_nonsilent(
+            audio,
+            min_silence_len=min_silence_duration,
+            silence_thresh=threshold_db,
+            seek_step=50,  # Smaller step for more precision
+        )
+
+        logger.info(
+            f"Found {len(nonsilent_ranges)} non-silent segments in {time.time() - silence_detect_start:.2f}s"
+        )
+
+        # If we have multiple segments or only one segment but with trimming needed
+        if not nonsilent_ranges:
+            logger.warning("No non-silent segments found, returning original audio")
+            return filepath
+
+        # Check if significant silence exists
+        first_segment_start = nonsilent_ranges[0][0]
+        last_segment_end = nonsilent_ranges[-1][1]
+
+        # Calculate total silence duration
+        # 1. Silence at beginning and end
+        edge_silence = first_segment_start + (duration_ms - last_segment_end)
+
+        # 2. Silence between segments
+        middle_silence = 0
+        if len(nonsilent_ranges) > 1:
+            for i in range(len(nonsilent_ranges) - 1):
+                gap = nonsilent_ranges[i + 1][0] - nonsilent_ranges[i][1]
+                middle_silence += gap
+                if gap > 10000:  # Log large gaps (10+ seconds)
+                    logger.info(
+                        f"Found large silence gap: {gap}ms between segments {i} and {i+1}"
+                    )
+
+        total_silence = edge_silence + middle_silence
+
+        # If no significant silence found
+        if total_silence < 1000:  # Less than 1 second total
+            logger.info(
+                f"Only {total_silence}ms of silence found, keeping original file"
+            )
+            return filepath
+
+        # Build new audio by concatenating non-silent segments
+        logger.info(f"Building processed audio from {len(nonsilent_ranges)} segments")
+        processed_audio = AudioSegment.empty()
+
+        for i, (start_ms, end_ms) in enumerate(nonsilent_ranges):
+            # Only add a small buffer for start/end segments
+            if i == 0:  # First segment - consider start buffer
+                start_ms = max(0, start_ms - 100)  # Small buffer at start
+
+            if i == len(nonsilent_ranges) - 1:  # Last segment - consider end buffer
+                end_ms = min(duration_ms, end_ms + 100)  # Small buffer at end
+
+            # For gaps between segments, check how big the gap is
+            if i > 0:
+                # Calculate gap from previous segment
+                prev_end = nonsilent_ranges[i - 1][1]
+                current_gap = start_ms - prev_end
+
+                # If gap is large (> 10s), add a short silence (500ms) instead of removing entirely
+                # This makes the transition feel more natural
+                if current_gap > 10000:
+                    # Add a small silence transition (500ms) instead of removing entirely
+                    processed_audio += AudioSegment.silent(duration=500)
+                    logger.info(
+                        f"Added 500ms silence transition for {current_gap}ms gap"
+                    )
+
+            # Add this segment
+            segment = audio[start_ms:end_ms]
+            processed_audio += segment
+
+        # Create a temporary file
+        _, ext = os.path.splitext(filepath)
+        with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as temp_file:
+            temp_filepath = temp_file.name
+
+        # Export the processed audio to the temporary file
+        logger.info(
+            f"Exporting processed audio ({len(processed_audio)}ms) to temporary file..."
+        )
+        export_start = time.time()
+        processed_audio.export(temp_filepath, format=ext.lstrip("."))
+        logger.info(f"Audio export completed in {time.time() - export_start:.2f}s")
+
+        # Log stats
+        reduction = duration_ms - len(processed_audio)
+        reduction_percent = (reduction / duration_ms) * 100
+        logger.info(
+            f"Removed {reduction}ms ({reduction_percent:.1f}%) of silence, original: {duration_ms}ms, new: {len(processed_audio)}ms"
+        )
+
+        if reduction > 30000:  # If we removed more than 30 seconds
+            logger.info(f"Major silence removal: {reduction/1000:.1f} seconds removed!")
+
+        return temp_filepath
+
+    except Exception as e:
+        logger.error(f"Error during silence detection: {e}", exc_info=True)
+        # Return original file if anything goes wrong
+        return filepath
+
+
 async def send_audio_file(
     bot: Bot,
     chat_id: int,
@@ -350,7 +557,25 @@ async def send_audio_file(
     Returns:
         bool: True if successful, False otherwise
     """
+    original_filepath = filepath
+    trimmed_file_created = False
+
+    logger.info(f"HERE IS THE TRACK INFO: {track_info}")
+
     try:
+        # Process audio to remove silence - more aggressive settings
+        processed_filepath = await detect_and_remove_silence(
+            filepath,
+            threshold_db=-40.0,  # Higher threshold to catch more subtle silence
+            min_silence_duration=2000,  # Lower minimum to 2 seconds for more aggressive removal
+        )
+
+        # Track if we created a new file that needs cleanup
+        trimmed_file_created = processed_filepath != filepath
+        if trimmed_file_created:
+            logger.info(f"Using trimmed audio file: {processed_filepath}")
+            filepath = processed_filepath
+
         # Format caption and prepare audio file
         caption = format_track_info_caption(track_info, (await bot.get_me()).username)
         audio = FSInputFile(filepath)
@@ -381,7 +606,7 @@ async def send_audio_file(
             thumbnail = None
 
         logger.info("Sending audio with artwork thumbnail")
-        return await bot.send_audio(
+        result = await bot.send_audio(
             chat_id=chat_id,
             audio=audio,
             caption=caption,
@@ -409,8 +634,36 @@ async def send_audio_file(
             disable_notification=True,
         )
 
+        # Clean up the trimmed file if it was created
+        if trimmed_file_created and os.path.exists(filepath):
+            try:
+                os.remove(filepath)
+                logger.info(f"Cleaned up trimmed file: {filepath}")
+            except Exception as e:
+                logger.error(f"Error cleaning up trimmed file {filepath}: {e}")
+
+        # Note: We don't clean up the original file here as that's handled by the caller
+        # based on the should_cleanup flag
+
+        return result
+
     except Exception as e:
         logger.error(f"Error sending audio: {e}")
+
+        # Clean up the trimmed file if there was an error
+        if (
+            trimmed_file_created
+            and filepath != original_filepath
+            and os.path.exists(filepath)
+        ):
+            try:
+                os.remove(filepath)
+                logger.info(f"Cleaned up trimmed file after error: {filepath}")
+            except Exception as cleanup_err:
+                logger.error(
+                    f"Error cleaning up trimmed file after error: {cleanup_err}"
+                )
+
         return False
 
 

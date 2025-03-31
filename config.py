@@ -16,7 +16,7 @@ SOUNDCLOUD_RESOLVE_API = "https://api-v2.soundcloud.com/resolve"
 # Debug options
 DEBUG_SEARCH = False  # Set to False to disable verbose logging for search
 DEBUG_DOWNLOAD = True  # Set to True to enable verbose logging for downloads
-DEBUG_EXTRACTIONS = False
+DEBUG_EXTRACTIONS = True
 
 # Search timeout in seconds
 SEARCH_TIMEOUT = 0.5
