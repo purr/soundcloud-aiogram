@@ -26,7 +26,12 @@ from utils import (
     format_track_info_caption,
     get_high_quality_artwork_url,
 )
-from predefined import artist_button, try_again_button, soundcloud_button
+from predefined import (
+    artist_button,
+    try_again_button,
+    soundcloud_button,
+    download_progress_button,
+)
 from utils.logger import logger
 from utils.formatting import get_low_quality_artwork_url
 
@@ -521,7 +526,7 @@ async def get_resized_thumbnail(
 
 
 async def detect_and_remove_silence(
-    filepath: str, threshold_db: float = -40.0, min_silence_duration: int = 2000
+    filepath: str, threshold_db: float = -55.0, min_silence_duration: int = 5000
 ) -> str:
     """
     Aggressively detect and remove silence from audio files.
@@ -676,6 +681,7 @@ async def send_audio_file(
     filepath: str,
     track_info: Dict[str, Any],
     reply_to_message_id: Optional[int] = None,
+    inline_message_id: Optional[str] = None,
 ) -> tuple[bool, Optional[str], Optional[Any]]:
     """Send audio file with proper formatting and metadata.
 
@@ -685,6 +691,7 @@ async def send_audio_file(
         filepath: Path to audio file
         track_info: Track metadata
         reply_to_message_id: Optional message ID to reply to
+        inline_message_id: Optional inline message ID to update with removal status
 
     Returns:
         tuple[bool, Optional[str], Optional[Any]]:
@@ -695,19 +702,40 @@ async def send_audio_file(
     original_filepath = filepath
     trimmed_file_created = False
 
-    logger.info(f"HERE IS THE TRACK INFO: {track_info}")
+    logger.info(f"Processing audio file for chat_id {chat_id}")
 
     try:
         # Process audio to remove silence - more aggressive settings
         processed_filepath = await detect_and_remove_silence(
             filepath,
-            threshold_db=-40.0,  # Higher threshold to catch more subtle silence
-            min_silence_duration=2000,  # Lower minimum to 2 seconds for more aggressive removal
+            threshold_db=-55.0,  # Higher threshold to catch more subtle silence
+            min_silence_duration=5000,  # Lower minimum to 2 seconds for more aggressive removal
         )
 
         # Track if we created a new file that needs cleanup
         trimmed_file_created = processed_filepath != filepath
+
+        # If silence was removed, update the button to let the user know
         if trimmed_file_created:
+            logger.info(f"Silence was detected and removed from audio file")
+
+            # Update the inline message if provided
+            if inline_message_id:
+                try:
+                    await bot.edit_message_reply_markup(
+                        inline_message_id=inline_message_id,
+                        reply_markup=InlineKeyboardMarkup(
+                            inline_keyboard=[
+                                [download_progress_button("removing_silence")]
+                            ]
+                        ),
+                    )
+                    logger.info("Updated button to show silence removal status")
+                except Exception as e:
+                    logger.warning(
+                        f"Error updating button to silence removal status: {e}"
+                    )
+
             logger.info(f"Using trimmed audio file: {processed_filepath}")
             filepath = processed_filepath
 
@@ -888,6 +916,7 @@ async def edit_message_with_audio(
     message_id: int,
     filepath: str,
     track_info: Dict[str, Any],
+    inline_message_id: Optional[str] = None,
 ) -> tuple[bool, Optional[str], Optional[Any]]:
     """Edit an existing message to add audio file instead of sending a new message.
 
@@ -897,6 +926,7 @@ async def edit_message_with_audio(
         message_id: Message ID to edit
         filepath: Path to audio file
         track_info: Track metadata
+        inline_message_id: Optional inline message ID to update with silence removal status
 
     Returns:
         tuple[bool, Optional[str], Optional[Any]]:
@@ -913,13 +943,34 @@ async def edit_message_with_audio(
         # Process audio to remove silence - more aggressive settings
         processed_filepath = await detect_and_remove_silence(
             filepath,
-            threshold_db=-40.0,  # Higher threshold to catch more subtle silence
-            min_silence_duration=2000,  # Lower minimum to 2 seconds for more aggressive removal
+            threshold_db=-55.0,  # Higher threshold to catch more subtle silence
+            min_silence_duration=5000,  # Lower minimum to 2 seconds for more aggressive removal
         )
 
         # Track if we created a new file that needs cleanup
         trimmed_file_created = processed_filepath != filepath
+
+        # If silence was removed, update the button to let the user know
         if trimmed_file_created:
+            logger.info(f"Silence was detected and removed from audio file")
+
+            # Update the inline message if provided
+            if inline_message_id:
+                try:
+                    await bot.edit_message_reply_markup(
+                        inline_message_id=inline_message_id,
+                        reply_markup=InlineKeyboardMarkup(
+                            inline_keyboard=[
+                                [download_progress_button("removing_silence")]
+                            ]
+                        ),
+                    )
+                    logger.info("Updated button to show silence removal status")
+                except Exception as e:
+                    logger.warning(
+                        f"Error updating button to silence removal status: {e}"
+                    )
+
             logger.info(f"Using trimmed audio file: {processed_filepath}")
             filepath = processed_filepath
 

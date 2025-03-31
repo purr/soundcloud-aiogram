@@ -850,6 +850,7 @@ async def download_and_update_inline_message(
                             message_id=msg_details["message_id"],
                             filepath=filepath,
                             track_info=track_info,
+                            inline_message_id=inline_message_id,
                         )
                     else:
                         # Use the regular send_audio_file if we don't have a message to edit
@@ -859,6 +860,7 @@ async def download_and_update_inline_message(
                             filepath=filepath,
                             track_info=track_info,
                             reply_to_message_id=None,
+                            inline_message_id=inline_message_id,
                         )
 
                     if not success:
