@@ -2,12 +2,13 @@ import io
 import os
 import html
 import time
-import logging
+import tempfile
 from typing import Any, Dict, Tuple, Optional
 
 import aiohttp
 import mutagen
 from PIL import Image
+from pydub import AudioSegment
 from aiogram import Bot
 from aiogram.enums import ParseMode
 from aiogram.types import (
@@ -18,6 +19,7 @@ from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
 )
+from pydub.silence import detect_nonsilent
 
 from utils import (
     format_error_caption,
@@ -25,11 +27,10 @@ from utils import (
     get_high_quality_artwork_url,
 )
 from predefined import artist_button, try_again_button, soundcloud_button
+from utils.logger import logger
 from utils.formatting import get_low_quality_artwork_url
 
 from .soundcloud import cleanup_files
-
-logger = logging.getLogger(__name__)
 
 
 async def validate_downloaded_track(
@@ -182,6 +183,51 @@ async def handle_download_failure(
                 f"Stored search query in handle_download_failure for track ID {track_id}: {search_query}"
             )
 
+        # Instead of changing the entire message, just update the buttons
+        # Create a button layout specific to download failures
+        markup = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [soundcloud_button(track_info["permalink_url"])],
+                [try_again_button(track_info["id"])],
+                [
+                    InlineKeyboardButton(
+                        text="❌ Download Failed: " + str(error_message)[:30] + "...",
+                        callback_data="error_info",
+                    )
+                ],
+            ]
+        )
+
+        # Just update the reply markup without changing the message content
+        try:
+            await bot.edit_message_reply_markup(
+                inline_message_id=message_id,
+                reply_markup=markup,
+            )
+            logger.info("Updated message with download failure buttons")
+        except Exception as e:
+            logger.error(f"Failed to update reply markup for download failure: {e}")
+            # If updating just the markup fails, try the fallback approach
+            await fallback_download_failure_message(
+                bot, message_id, track_info, error_message, search_query
+            )
+    except Exception as e:
+        logger.error(f"Error handling download failure: {e}")
+        # Try fallback approach
+        await fallback_download_failure_message(
+            bot, message_id, track_info, error_message, search_query
+        )
+
+
+async def fallback_download_failure_message(
+    bot: Bot,
+    message_id: str,
+    track_info: Dict[str, Any],
+    error_message: str,
+    search_query: Optional[str] = None,
+) -> None:
+    """Fallback method for when updating just the markup fails for download failures."""
+    try:
         # Format the error message
         failure_text = format_error_caption(
             "Download failed: " + error_message,
@@ -203,7 +249,14 @@ async def handle_download_failure(
 
         # Update message with failure
         await bot.edit_message_caption(
-            inline_message_id=message_id, caption=failure_text, reply_markup=None
+            inline_message_id=message_id,
+            caption=failure_text,
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [soundcloud_button(track_info["permalink_url"])],
+                    [try_again_button(track_info["id"])],
+                ]
+            ),
         )
     except Exception as e:
         logger.error(f"Error updating message with failure: {e}")
@@ -242,10 +295,61 @@ async def handle_system_error(
                 f"Stored search query in handle_system_error for track ID {track_id}: {search_query}"
             )
 
-        final_caption = "⚠️ <b>System Error</b>\n\n"
+        # Instead of changing the entire message, just update the buttons
+        # Create a button layout specific to system errors
+        markup = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [soundcloud_button(track_info["permalink_url"])],
+                [try_again_button(track_info["id"])],
+                [
+                    InlineKeyboardButton(
+                        text="❌ System Error: " + str(error_message)[:30] + "...",
+                        callback_data="error_info",
+                    )
+                ],
+            ]
+        )
+
+        # Just update the reply markup without changing the message content
+        try:
+            await bot.edit_message_reply_markup(
+                inline_message_id=message_id,
+                reply_markup=markup,
+            )
+            logger.info("Updated message with system error buttons")
+        except Exception as e:
+            logger.error(f"Failed to update reply markup: {e}")
+            # If updating just the markup fails, try to update the whole message
+            await fallback_system_error_message(
+                bot, message_id, track_info, error_message, search_query
+            )
+    except Exception as e:
+        logger.error(f"Error handling system error: {e}")
+        # Try fallback approach
+        await fallback_system_error_message(
+            bot, message_id, track_info, error_message, search_query
+        )
+    finally:
+        if filepath:
+            await cleanup_files(filepath)
+
+
+async def fallback_system_error_message(
+    bot: Bot,
+    message_id: str,
+    track_info: Dict[str, Any],
+    error_message: str,
+    search_query: Optional[str] = None,
+) -> None:
+    """Fallback method for when updating just the markup fails."""
+    try:
+        final_caption = "❌ <b>System Error</b>\n\n"
         permalink_url_no_embed = track_info["permalink_url"].replace("://", "://\u200c")
         final_caption += f"♫ <a href='{permalink_url_no_embed}'><b>{html.escape(track_info['title'])}</b> - <b>{html.escape(track_info['artist'])}</b></a>\n\n"
-        final_caption += f"<b>Error details:</b> {error_message}\n\n"
+        final_caption += (
+            f"<b>Error:</b> There was a technical issue processing this track.\n"
+        )
+        final_caption += f"<i>{error_message}</i>\n\n"
 
         # Add Spotify URL if available
         if "spotify_url" in track_info:
@@ -276,11 +380,11 @@ async def handle_system_error(
             reply_markup=markup,
         )
     except Exception as e:
-        logger.error(f"Error updating system error caption: {e}")
+        logger.error(f"Final system error fallback failed: {e}")
         try:
-            simple_caption = "⚠️ <b>System Error:</b> An error occurred while processing your request. Please try again later."
+            simple_caption = "❌ <b>System Error:</b> An error occurred while processing your request. Please try again later."
 
-            # Add Spotify URL in simple fallback too
+            # Add Spotify URL in simpler fallback too
             if "spotify_url" in track_info:
                 spotify_url = track_info["spotify_url"]
                 spotify_url_no_embed = spotify_url.replace("://", "://\u200c")
@@ -300,9 +404,6 @@ async def handle_system_error(
             )
         except Exception as e:
             logger.error(f"Final system error fallback failed: {e}")
-    finally:
-        if filepath:
-            await cleanup_files(filepath)
 
 
 async def download_and_resize_image(
@@ -379,6 +480,46 @@ async def download_and_resize_image(
     return img_byte_arr.getvalue()
 
 
+async def get_resized_thumbnail(
+    track_info: Dict[str, Any],
+) -> Optional[BufferedInputFile]:
+    """Creates a properly formatted thumbnail for Telegram audio messages from track info.
+
+    This centralized function handles all the steps for thumbnail preparation:
+    1. Extracts the artwork URL from track_info
+    2. Uses a lower-quality version for bandwidth efficiency
+    3. Downloads and properly sizes/compresses the image to meet Telegram requirements
+    4. Returns a properly formatted BufferedInputFile ready to use with audio messages
+
+    Args:
+        track_info: Track metadata dictionary containing artwork_url
+
+    Returns:
+        Optional[BufferedInputFile]: Prepared thumbnail or None if unavailable/error
+    """
+    # Get artwork URL if available
+    artwork_url = track_info.get("artwork_url")
+
+    if not artwork_url:
+        logger.warning("No artwork URL found in track_info for thumbnail")
+        return None
+
+    # Use lower quality artwork for thumbnails to reduce bandwidth
+    artwork_url = get_low_quality_artwork_url(artwork_url)
+
+    try:
+        # Download and resize image
+        thumbnail_data = await download_and_resize_image(artwork_url)
+        if thumbnail_data:
+            return BufferedInputFile(thumbnail_data, filename="thumbnail.jpg")
+        else:
+            logger.warning("Failed to download and resize artwork")
+            return None
+    except Exception as e:
+        logger.error(f"Error processing artwork for thumbnail: {e}")
+        return None
+
+
 async def detect_and_remove_silence(
     filepath: str, threshold_db: float = -40.0, min_silence_duration: int = 2000
 ) -> str:
@@ -398,15 +539,6 @@ async def detect_and_remove_silence(
         str: Path to the processed file (either the original if no silence or a new temp file)
     """
     try:
-        import os
-        import logging
-        import tempfile
-
-        from pydub import AudioSegment
-        from pydub.silence import detect_nonsilent
-
-        logger = logging.getLogger(__name__)
-
         # Skip processing if file doesn't exist
         if not os.path.exists(filepath):
             logger.warning(f"File not found for silence detection: {filepath}")
@@ -544,7 +676,7 @@ async def send_audio_file(
     filepath: str,
     track_info: Dict[str, Any],
     reply_to_message_id: Optional[int] = None,
-) -> bool:
+) -> tuple[bool, Optional[str], Optional[Any]]:
     """Send audio file with proper formatting and metadata.
 
     Args:
@@ -555,7 +687,10 @@ async def send_audio_file(
         reply_to_message_id: Optional message ID to reply to
 
     Returns:
-        bool: True if successful, False otherwise
+        tuple[bool, Optional[str], Optional[Any]]:
+            - bool: True if successful, False otherwise
+            - str: Error type if failed ('permission' or 'system' or None)
+            - Any: Message object if successful, None otherwise
     """
     original_filepath = filepath
     trimmed_file_created = False
@@ -580,59 +715,57 @@ async def send_audio_file(
         caption = format_track_info_caption(track_info, (await bot.get_me()).username)
         audio = FSInputFile(filepath)
 
-        # Get artwork URL if available
-        artwork_url = track_info.get("artwork_url")
-
-        if artwork_url:
-            # Use lower quality artwork for thumbnails to reduce bandwidth
-            artwork_url = get_low_quality_artwork_url(artwork_url)
-            logger.info(f"Using artwork URL for audio message: {artwork_url}")
-
-            # Download and resize image
-            try:
-                thumbnail_data = await download_and_resize_image(artwork_url)
-                if thumbnail_data:
-                    thumbnail = BufferedInputFile(
-                        thumbnail_data, filename="thumbnail.jpg"
-                    )
-                else:
-                    thumbnail = None
-                    logger.warning("Failed to download and resize artwork")
-            except Exception as e:
-                logger.error(f"Error processing artwork: {e}")
-                thumbnail = None
-        else:
-            logger.warning("No artwork URL found in track_info for audio message")
-            thumbnail = None
+        # Get thumbnail using the centralized worker function
+        thumbnail = await get_resized_thumbnail(track_info)
 
         logger.info("Sending audio with artwork thumbnail")
-        result = await bot.send_audio(
-            chat_id=chat_id,
-            audio=audio,
-            caption=caption,
-            title=track_info["title"],
-            performer=track_info["artist"],
-            thumbnail=thumbnail,
-            reply_to_message_id=reply_to_message_id,
-            reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        soundcloud_button(track_info["permalink_url"]),
-                        artist_button(
-                            track_info["user"]["url"]
-                            + f"?urn={track_info['user']['urn']}"
-                        ),
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            text="❓ Wrong Artist/Title? Click here!",
-                            url="https://t.me/id3_robot?start=dlmus",
-                        ),
-                    ],
-                ]
-            ),
-            disable_notification=True,
-        )
+        try:
+            result = await bot.send_audio(
+                chat_id=chat_id,
+                audio=audio,
+                caption=caption,
+                title=track_info["title"],
+                performer=track_info["artist"],
+                thumbnail=thumbnail,
+                reply_to_message_id=reply_to_message_id,
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            soundcloud_button(track_info["permalink_url"]),
+                            artist_button(
+                                track_info["user"]["url"]
+                                + f"?urn={track_info['user']['urn']}"
+                            ),
+                        ],
+                        [
+                            InlineKeyboardButton(
+                                text="❓ Wrong Artist/Title? Click here!",
+                                url="https://t.me/id3_robot?start=dlmus",
+                            ),
+                        ],
+                    ]
+                ),
+                disable_notification=True,
+            )
+        except Exception as send_err:
+            # Check if this is a permission error
+            error_message = str(send_err).lower()
+            is_perm_error = (
+                "forbidden" in error_message
+                or "blocked" in error_message
+                or "bot was blocked" in error_message
+                or "not enough rights" in error_message
+                or "bot can't initiate" in error_message
+                or "user is deactivated" in error_message
+                or "chat not found" in error_message
+            )
+
+            if is_perm_error:
+                logger.error(f"Permission error when sending audio: {send_err}")
+                return False, "permission", None
+            else:
+                logger.error(f"System error when sending audio: {send_err}")
+                return False, "system", None
 
         # Clean up the trimmed file if it was created
         if trimmed_file_created and os.path.exists(filepath):
@@ -645,7 +778,7 @@ async def send_audio_file(
         # Note: We don't clean up the original file here as that's handled by the caller
         # based on the should_cleanup flag
 
-        return result
+        return True, None, result
 
     except Exception as e:
         logger.error(f"Error sending audio: {e}")
@@ -664,7 +797,7 @@ async def send_audio_file(
                     f"Error cleaning up trimmed file after error: {cleanup_err}"
                 )
 
-        return False
+        return False, "system", None
 
 
 async def update_inline_message_with_audio(
@@ -684,7 +817,6 @@ async def update_inline_message_with_audio(
     try:
         # Get artwork URL for thumbnail
         artwork_url = track_info.get("artwork_url", "")
-        logger.info(f"Artwork URL from track_info: {artwork_url}")
 
         if artwork_url:
             # Ensure it's high quality
@@ -729,6 +861,7 @@ def is_permission_error(error: Exception) -> bool:
     permission_error_phrases = [
         "forbidden",
         "bot was blocked",
+        "blocked by the user",
         "bot was not found",
         "chat not found",
         "user is deactivated",
@@ -740,5 +873,185 @@ def is_permission_error(error: Exception) -> bool:
         "access denied",
         "message not found",
         "chat access required",
+        "user is restricted",  # When user is restricted by Telegram
+        "kicked by the user",  # When bot was kicked
+        "not enough rights to send",  # Permission issue
+        "chat not accessible",  # Chat not accessible
+        "chat write forbidden",  # Can't write to chat
     ]
     return any(phrase in error_text for phrase in permission_error_phrases)
+
+
+async def edit_message_with_audio(
+    bot: Bot,
+    chat_id: int,
+    message_id: int,
+    filepath: str,
+    track_info: Dict[str, Any],
+) -> tuple[bool, Optional[str], Optional[Any]]:
+    """Edit an existing message to add audio file instead of sending a new message.
+
+    Args:
+        bot: Bot instance
+        chat_id: Chat ID
+        message_id: Message ID to edit
+        filepath: Path to audio file
+        track_info: Track metadata
+
+    Returns:
+        tuple[bool, Optional[str], Optional[Any]]:
+            - bool: True if successful, False otherwise
+            - str: Error type if failed ('permission' or 'system' or None)
+            - Any: Message object if successful, None otherwise
+    """
+    original_filepath = filepath
+    trimmed_file_created = False
+
+    logger.info(f"Editing message {message_id} with audio file")
+
+    try:
+        # Process audio to remove silence - more aggressive settings
+        processed_filepath = await detect_and_remove_silence(
+            filepath,
+            threshold_db=-40.0,  # Higher threshold to catch more subtle silence
+            min_silence_duration=2000,  # Lower minimum to 2 seconds for more aggressive removal
+        )
+
+        # Track if we created a new file that needs cleanup
+        trimmed_file_created = processed_filepath != filepath
+        if trimmed_file_created:
+            logger.info(f"Using trimmed audio file: {processed_filepath}")
+            filepath = processed_filepath
+
+        # Prepare audio file
+        audio = FSInputFile(filepath)
+
+        # Get thumbnail using the centralized worker function
+        thumbnail = await get_resized_thumbnail(track_info)
+
+        logger.info(f"Editing message {message_id} to add audio")
+        try:
+            # First, send the audio to get a file_id
+            temp_result = await bot.send_audio(
+                chat_id=chat_id,
+                audio=audio,
+                title=track_info["title"],
+                performer=track_info["artist"],
+                thumbnail=thumbnail,
+                disable_notification=True,
+            )
+
+            # Get the file_id
+            if hasattr(temp_result, "audio") and temp_result.audio:
+                file_id = temp_result.audio.file_id
+                logger.info(f"Got file_id from temporary message: {file_id}")
+
+                # Delete the temporary message
+                await bot.delete_message(
+                    chat_id=chat_id, message_id=temp_result.message_id
+                )
+
+                # Get high quality artwork URL for media object
+                artwork_url = track_info.get("artwork_url", "")
+                if artwork_url:
+                    artwork_url = get_high_quality_artwork_url(artwork_url)
+                    logger.info(
+                        f"Using high quality artwork URL for media: {artwork_url}"
+                    )
+
+                # Update the original message with the audio
+                # This requires creating an InputMedia object
+                media = InputMediaAudio(
+                    media=file_id,
+                    caption=format_track_info_caption(
+                        track_info, (await bot.get_me()).username
+                    ),
+                    parse_mode=ParseMode.HTML,
+                    title=track_info["title"],
+                    performer=track_info["artist"],
+                    thumbnail=(URLInputFile(artwork_url) if artwork_url else None),
+                )
+
+                # Edit the message with audio
+                result = await bot.edit_message_media(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    media=media,
+                    reply_markup=InlineKeyboardMarkup(
+                        inline_keyboard=[
+                            [
+                                soundcloud_button(track_info["permalink_url"]),
+                                artist_button(
+                                    track_info["user"]["url"]
+                                    + f"?urn={track_info['user']['urn']}"
+                                ),
+                            ],
+                            [
+                                InlineKeyboardButton(
+                                    text="❓ Wrong Artist/Title? Click here!",
+                                    url="https://t.me/id3_robot?start=dlmus",
+                                ),
+                            ],
+                        ]
+                    ),
+                )
+
+                logger.info(f"Successfully edited message {message_id} with audio")
+                return True, None, result
+            else:
+                logger.error("Temporary message has no audio attribute")
+                return False, "system", None
+
+        except Exception as edit_err:
+            # Check if this is a permission error
+            error_message = str(edit_err).lower()
+            is_perm_error = (
+                "forbidden" in error_message
+                or "blocked" in error_message
+                or "bot was blocked" in error_message
+                or "not enough rights" in error_message
+                or "bot can't initiate" in error_message
+                or "user is deactivated" in error_message
+                or "chat not found" in error_message
+            )
+
+            if is_perm_error:
+                logger.error(
+                    f"Permission error when editing message with audio: {edit_err}"
+                )
+                return False, "permission", None
+            else:
+                logger.error(
+                    f"System error when editing message with audio: {edit_err}"
+                )
+                return False, "system", None
+
+        # Clean up the trimmed file if it was created
+        if trimmed_file_created and os.path.exists(filepath):
+            try:
+                os.remove(filepath)
+                logger.info(f"Cleaned up trimmed file: {filepath}")
+            except Exception as e:
+                logger.error(f"Error cleaning up trimmed file {filepath}: {e}")
+
+        # Note: We don't clean up the original file here as that's handled by the caller
+        # based on the should_cleanup flag
+
+    except Exception as e:
+        logger.error(f"Error editing message with audio: {e}")
+
+        # Clean up the trimmed file if there was an error
+        if (
+            trimmed_file_created
+            and filepath != original_filepath
+            and os.path.exists(filepath)
+        ):
+            try:
+                os.remove(filepath)
+                logger.info(f"Cleaned up trimmed file after error: {filepath}")
+            except Exception as cleanup_err:
+                logger.error(
+                    f"Error cleaning up trimmed file after error: {cleanup_err}"
+                )
+
+        return False, "system", None

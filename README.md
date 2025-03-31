@@ -19,6 +19,8 @@ A Telegram bot that allows users to search for and download tracks from SoundClo
 - ✂️ Automated silence detection and removal from tracks
 - 📝 Intelligent artist extraction from track titles
 - 🧹 "Skip to X" timestamp removal from titles
+- 🛡️ Enhanced permission detection with improved user feedback
+- 📜 Message preservation during errors - only buttons are updated
 
 ## Setup
 
@@ -114,6 +116,22 @@ Supported link formats:
 - Album artwork is included when available
 - Placeholder audio uses direct URL reference (no downloading or caching)
 
+## Error Handling
+
+The bot features sophisticated error handling that distinguishes between different types of errors:
+
+- **Permission errors**: When the user hasn't started the bot or has privacy settings that prevent direct messages, the bot shows a 🔒 **Permission Required** button with clear instructions on how to resolve the issue.
+
+- **System errors**: For technical issues with the download or processing, the bot displays a ❌ **System Error** button with information about the problem.
+
+Both types of errors are handled with minimal disruption to the user experience:
+
+- Only the buttons are updated, preserving the original message content
+- The user can click on error buttons to get more information
+- "Try Again" buttons are provided for easy retry
+
+The bot now uses a single-message approach for downloads, where it first sends a message with track information, then updates that same message with the audio file once downloaded, creating a cleaner chat experience.
+
 ## Technical Details
 
 - Built with aiogram v3 for Telegram Bot API
@@ -126,6 +144,9 @@ Supported link formats:
 
 ## Version History
 
+- v0.8.4: Added centralized thumbnail handling with a dedicated worker function for better code organization
+- v0.8.3: Enhanced error handling with button-only updates, implemented single-message approach for audio downloads, and improved permission detection
+- v0.8.2: Added support for downloading audio from Spotify links with improved error handling
 - v0.7.94: Added high-quality artwork embedding directly into ID3 tags of downloaded audio files
 - v0.7.93: Enhanced download system with improved HLS stream handling and advanced quality scoring for all audio streams
 - v0.7.92: Improved track download support for HLS-only tracks and direct downloadable tracks, removed local artwork download
@@ -228,7 +249,9 @@ After creating your bot with [BotFather](https://t.me/botfather), you need to co
 - **Inline downloads don't work**: Make sure you've messaged the bot directly with /start first
 - **No audio plays in inline results**: Ensure your Telegram app is up to date - some older versions may not properly handle audio placeholder updates
 - **Downloads get stuck**: If a download takes too long, cancel and try again later when SoundCloud servers may be less busy
-- **System error messages**: If you see a system error message, this indicates a technical issue with the bot or server - not a permissions problem. Try again later.
+- **System error messages**: If you see a "❌ System Error" button, this indicates a technical issue with the bot or server - not a permissions problem. Click the button for more details and try again later.
+- **Permission Required messages**: If you see a "🔒 Permission Required" button, you need to start a chat with the bot by clicking the "Start Bot" button provided and send /start, then try again.
+- **Original message remains but buttons change**: This is by design - the bot preserves your message content while updating only the status buttons to minimize disruption
 
 ## Privacy & Legal
 

@@ -16,7 +16,7 @@ SOUNDCLOUD_RESOLVE_API = "https://api-v2.soundcloud.com/resolve"
 # Debug options
 DEBUG_SEARCH = False  # Set to False to disable verbose logging for search
 DEBUG_DOWNLOAD = True  # Set to True to enable verbose logging for downloads
-DEBUG_EXTRACTIONS = True
+DEBUG_EXTRACTIONS = False
 
 # Search timeout in seconds
 SEARCH_TIMEOUT = 0.5
@@ -33,4 +33,4 @@ MAX_PLAYLIST_TRACKS_TO_SHOW = 50  # Maximum number of tracks to display from a p
 SOUNDCLOUD_LOGO_URL = "https://d21buns5ku92am.cloudfront.net/26628/images/419679-1x1_SoundCloudLogo_cloudmark-f5912b-original-1645807040.jpg"
 
 # Version
-VERSION = "0.8.2"
+VERSION = "0.8.4"

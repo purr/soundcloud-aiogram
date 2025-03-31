@@ -55,6 +55,6 @@ def soundcloud_button(url: str):
 
 def start_chat_button(bot_username: str):
     return InlineKeyboardButton(
-        text="💬 Send /start",
+        text="💬 Please send /start",
         url=f"https://t.me/{bot_username}?start=open_dms",
     )

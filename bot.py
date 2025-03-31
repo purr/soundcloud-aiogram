@@ -2,7 +2,7 @@ import html
 import time
 import asyncio
 import traceback
-from typing import Dict
+from typing import Any, Dict
 from datetime import datetime
 
 from aiogram import F, Bot, Router, Dispatcher
@@ -65,6 +65,7 @@ from helpers.workers import (
     send_audio_file,
     handle_system_error,
     is_permission_error,
+    edit_message_with_audio,
     handle_download_failure,
     validate_downloaded_track,
     update_inline_message_with_audio,
@@ -95,6 +96,9 @@ download_queue = asyncio.Queue()
 
 # Store search queries for track IDs
 track_search_queries: Dict[str, str] = {}
+
+# Store inline message to DM message mapping
+inline_message_to_dm_message: Dict[str, Dict[str, int]] = {}
 
 
 @router.message(CommandStart())
@@ -640,8 +644,112 @@ async def download_and_update_inline_message(
         except Exception as e:
             logger.warning(f"Error updating button to downloading status: {e}")
 
-        # Get track info to check waveform before downloading
+        # Get track info before downloading
         track_data = await get_track(track_id)
+        if not track_data:
+            logger.error(f"Failed to get track data for track ID: {track_id}")
+            await handle_download_failure(
+                bot=bot,
+                message_id=inline_message_id,
+                track_info={
+                    "id": track_id,
+                    "permalink_url": f"https://soundcloud.com/tracks/{track_id}",
+                },
+                error_message="Failed to get track information from SoundCloud",
+                search_query=search_query,
+                track_search_queries_dict=track_search_queries,
+            )
+            return
+
+        # Get basic track info for testing the message
+        track_info = get_track_info(track_data)
+
+        # Check if the search query was a Spotify URL and add it to track_info
+        if search_query and search_query in inline_spotify_urls:
+            track_info["spotify_url"] = inline_spotify_urls[search_query]
+
+        # Get user_id if we have it
+        user_id = inline_message_users.get(inline_message_id)
+
+        # Verify we can send messages to the user BEFORE downloading
+        if user_id:
+            logger.info(f"Testing if we can send a message to user {user_id}")
+            can_send_message = True
+
+            try:
+                # Format a complete track info message with all the information
+                track_caption = format_track_info_caption(
+                    track_info, bot_user["username"]
+                )
+
+                # Send the actual track info message that we'll update with audio later
+                test_message = await bot.send_message(
+                    chat_id=user_id,
+                    text=track_caption,
+                    reply_markup=InlineKeyboardMarkup(
+                        inline_keyboard=[
+                            [
+                                soundcloud_button(track_info["permalink_url"]),
+                                artist_button(
+                                    track_info["user"]["url"]
+                                    + f"?urn={track_info['user']['urn']}"
+                                ),
+                            ],
+                            [
+                                InlineKeyboardButton(
+                                    text="⏳ Downloading...",
+                                    callback_data="download_status",
+                                ),
+                            ],
+                        ]
+                    ),
+                    disable_notification=True,
+                )
+
+                # Save the message ID so we can update it later with the audio
+                inline_message_to_dm_message[inline_message_id] = {
+                    "user_id": user_id,
+                    "message_id": test_message.message_id,
+                }
+
+                logger.info(
+                    f"Successfully verified permission and sent track info to user {user_id}"
+                )
+
+            except Exception as perm_err:
+                can_send_message = False
+                logger.warning(f"Cannot send message to user {user_id}: {perm_err}")
+
+                # Check if this is a permission error
+                if is_permission_error(perm_err):
+                    logger.error(
+                        f"Permission error when testing DM to user: {perm_err}"
+                    )
+                    await fallback_to_direct_message(
+                        inline_message_id,
+                        track_id,
+                        track_info,
+                        bot_user,
+                        search_query,
+                    )
+                    return
+                else:
+                    # For any other error, still proceed with download since we're not sure
+                    # if it's a permission issue or just a temporary problem
+                    logger.warning(f"Non-permission error when testing DM: {perm_err}")
+
+            # If we can't send messages, show the permission-required message and stop
+            if not can_send_message:
+                await fallback_to_direct_message(
+                    inline_message_id,
+                    track_id,
+                    track_info,
+                    bot_user,
+                    search_query,
+                )
+                return
+
+        # Now proceed with the download since we've verified permissions
         if track_data and "waveform_url" in track_data:
             # Analyze waveform for silence
             silence_analysis = await analyze_waveform_for_silence(
@@ -681,10 +789,10 @@ async def download_and_update_inline_message(
         # Flag to track if we need to clean up files
         should_cleanup = not download_result.get("cached", False)
 
-        # Track info for either success or failure cases
+        # Update the track_info with complete data
         track_info = get_track_info(download_result.get("track_data", {}))
 
-        # Check if the search query was a Spotify URL and add it to track_info
+        # Check if the search query was a Spotify URL and add it to track_info again (in case it was updated)
         if search_query and search_query in inline_spotify_urls:
             track_info["spotify_url"] = inline_spotify_urls[search_query]
             logger.info(f"Added Spotify URL to track_info: {track_info['spotify_url']}")
@@ -726,35 +834,62 @@ async def download_and_update_inline_message(
                 f"Download successful in {download_time:.2f} seconds: {download_result.get('filepath')}"
             )
 
-            user_id = inline_message_users.get(inline_message_id)
-
-            # Only proceed with file_id approach if the user has open DMs
+            # Since we've already verified user permissions earlier, just send the audio
             if user_id:
                 logger.info(f"Sending audio to user {user_id} to get file_id")
 
                 try:
                     # Send audio to get file_id
-                    success = await send_audio_file(
-                        bot=bot,
-                        chat_id=user_id,
-                        filepath=filepath,
-                        track_info=track_info,
-                        reply_to_message_id=None,
-                    )
+                    if inline_message_id in inline_message_to_dm_message:
+                        # If we have a direct message already sent for this inline message,
+                        # edit that message with audio instead of sending a new one
+                        msg_details = inline_message_to_dm_message[inline_message_id]
+                        success, error_type, result = await edit_message_with_audio(
+                            bot=bot,
+                            chat_id=msg_details["user_id"],
+                            message_id=msg_details["message_id"],
+                            filepath=filepath,
+                            track_info=track_info,
+                        )
+                    else:
+                        # Use the regular send_audio_file if we don't have a message to edit
+                        success, error_type, result = await send_audio_file(
+                            bot=bot,
+                            chat_id=user_id,
+                            filepath=filepath,
+                            track_info=track_info,
+                            reply_to_message_id=None,
+                        )
 
                     if not success:
-                        # Show the permission required message
-                        await fallback_to_direct_message(
-                            inline_message_id,
-                            track_id,
-                            track_info,
-                            bot_user,
-                            search_query,
-                        )
+                        if error_type == "permission":
+                            # This is unexpected since we already checked permissions, but handle anyway
+                            logger.error(
+                                "Unexpected permission error when sending audio"
+                            )
+                            await fallback_to_direct_message(
+                                inline_message_id,
+                                track_id,
+                                track_info,
+                                bot_user,
+                                search_query,
+                            )
+                        else:
+                            # This is a system error
+                            logger.error("System error when sending audio to user")
+                            await handle_system_error(
+                                bot=bot,
+                                message_id=inline_message_id,
+                                track_info=track_info,
+                                error_message="Failed to send audio file due to an internal error",
+                                search_query=search_query,
+                                filepath=filepath,
+                                track_search_queries_dict=track_search_queries,
+                            )
                         return
 
-                    if hasattr(success, "audio") and success.audio:
-                        file_id = success.audio.file_id
+                    if result and hasattr(result, "audio") and result.audio:
+                        file_id = result.audio.file_id
                         logger.info(f"Obtained file_id for inline update: {file_id}")
 
                         # Update the inline message with the file_id
@@ -776,22 +911,23 @@ async def download_and_update_inline_message(
                             )
                     else:
                         logger.error(
-                            "Failed to get file_id: temp_message has no audio attribute"
+                            "Failed to get file_id: result has no audio attribute"
                         )
-                        await fallback_to_direct_message(
-                            inline_message_id,
-                            track_id,
-                            track_info,
-                            bot_user,
-                            search_query,
+                        # This is a system error, not a permission error
+                        await handle_system_error(
+                            bot=bot,
+                            message_id=inline_message_id,
+                            track_info=track_info,
+                            error_message="Failed to process audio: The file was sent but couldn't be processed by Telegram",
+                            search_query=search_query,
+                            filepath=filepath,
+                            track_search_queries_dict=track_search_queries,
                         )
-
-                except Exception as dm_err:
-                    if is_permission_error(dm_err):
-                        logger.error(
-                            f"Permission error when sending DM to user: {dm_err}"
-                        )
-                        # Show the permission required message
+                except Exception as e:
+                    # Check very specifically for permission errors using our helper
+                    if is_permission_error(e):
+                        logger.error(f"Permission error when sending DM to user: {e}")
+                        # Show the permission required message - this is the correct use case
                         await fallback_to_direct_message(
                             inline_message_id,
                             track_id,
@@ -800,25 +936,17 @@ async def download_and_update_inline_message(
                             search_query,
                         )
                     else:
-                        logger.error(f"System error when sending DM to user: {dm_err}")
+                        # For any other error, show a system error message
+                        logger.error(f"System error when sending DM to user: {e}")
                         await handle_system_error(
                             bot=bot,
                             message_id=inline_message_id,
                             track_info=track_info,
-                            error_message=f"System error: {str(dm_err)[:100]}",
+                            error_message=f"System error: {str(e)[:100]}",
                             search_query=search_query,
                             filepath=filepath,
                             track_search_queries_dict=track_search_queries,
                         )
-            else:
-                # User doesn't have DMs open, show chat access needed message
-                await fallback_to_direct_message(
-                    inline_message_id,
-                    track_id,
-                    track_info,
-                    bot_user,
-                    search_query,
-                )
         else:
             # Download failed
             error_message = download_result.get("message", "Unknown error")
@@ -836,9 +964,7 @@ async def download_and_update_inline_message(
         traceback.print_exc()
         logger.error(f"Error in download_and_update_inline_message: {e}", exc_info=True)
         try:
-            error_caption = (
-                "❌ <b>Error:</b> Something went wrong while processing your download."
-            )
+            error_caption = "❌ <b>System Error:</b> Something went wrong while processing your download."
             if search_query:
                 error_caption += (
                     f"\n\n<b>Query:</b> <code>{html.escape(search_query)}</code>"
@@ -876,12 +1002,42 @@ async def fallback_to_direct_message(
     """Fallback to direct message approach if inline update fails due to permission issues"""
     filepath = None
     try:
+        # Log that this is specifically for permission issues
+        logger.info(f"Showing permission required message for track ID {track_id}")
+
         # Store the search query for this track ID if available
         if search_query:
             track_search_queries[track_id] = search_query
             logger.info(
                 f"Stored search query in fallback for track ID {track_id}: {search_query}"
             )
+
+        # Instead of changing the entire message, just update the buttons
+        # Create a button layout specific to permission errors
+        markup = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="🔒 Permission Required", callback_data="permission_info"
+                    )
+                ],
+                [start_chat_button(bot_user["username"])],
+                [try_again_button(track_id)],
+            ]
+        )
+
+        # Just update the reply markup without changing the message content
+        try:
+            await bot.edit_message_reply_markup(
+                inline_message_id=inline_message_id,
+                reply_markup=markup,
+            )
+            logger.info("Updated message with permission required buttons")
+            return  # Success! No need for fallback
+        except Exception as e:
+            logger.error(f"Failed to update reply markup for permission: {e}")
+            # If updating just the markup fails, try the full message update
+            # Continue to the original implementation below
 
         # Get the artwork URL for a hyperlink
         artwork_url = track_info.get("artwork_url") or ""
@@ -890,7 +1046,7 @@ async def fallback_to_direct_message(
             artwork_url = get_high_quality_artwork_url(artwork_url)
 
         # Prepare caption with minimalistic format and clearer instructions
-        final_caption = "⚠️ <b>Permission Required</b>\n\n"
+        final_caption = "🔒 <b>Permission Required</b>\n\n"
 
         # Use zero-width space to prevent URL embedding
         permalink_url_no_embed = track_info["permalink_url"].replace("://", "://\u200c")
@@ -909,7 +1065,8 @@ async def fallback_to_direct_message(
             )
 
         # Add a timestamp to ensure message is always different when "Try Again" is clicked
-        final_caption += "To download this track:\n"
+        final_caption += "<b>Why am I seeing this?</b>\n"
+        final_caption += "Your privacy settings don't allow the bot to message you directly. To download this track:\n\n"
         final_caption += "1. ➥ Click the button below to send <code>/start</code>\n"
         final_caption += "2. ↺ Return here and try downloading again\n\n"
         final_caption += f"<i>This is necessary because Telegram requires you to message the bot first before it can send you files. (Last attempted: {int(time.time())})</i>"
@@ -943,7 +1100,11 @@ async def fallback_to_direct_message(
         logger.error(f"Error updating fallback caption: {caption_err}")
         try:
             # Simpler fallback if the first attempt fails
-            simple_caption = f"🔒 <b>Permission Required:</b> Please message @{bot_user['username']} first (/start) before downloading."
+            simple_caption = (
+                f"🔒 <b>Permission Required:</b> Please message @{bot_user['username']} "
+                f"first (/start) before downloading.\n\n"
+                f"Your privacy settings don't allow the bot to message you directly."
+            )
 
             # Add Spotify URL in simpler fallback too
             if "spotify_url" in track_info:
@@ -1055,7 +1216,7 @@ async def download_and_send(message: Message, track_id: str, spotify_url=None):
             should_cleanup = not download_result.get("cached", False)
 
             # Use the worker function to send the audio
-            success = await send_audio_file(
+            success, error_type, result = await send_audio_file(
                 bot=bot,
                 chat_id=chat_id,
                 filepath=filepath,
@@ -1064,14 +1225,25 @@ async def download_and_send(message: Message, track_id: str, spotify_url=None):
             )
 
             if not success:
-                # Handle failure
-                await handle_download_failure(
-                    bot=bot,
-                    message_id=message.message_id,
-                    track_info=track_info,
-                    error_message="Failed to send audio file",
-                    track_search_queries_dict=track_search_queries,
-                )
+                # Handle failure based on error type
+                if error_type == "permission":
+                    await message.reply(
+                        "🔒 <b>Permission Error:</b> I can't send you messages directly. Please check your privacy settings.",
+                        reply_markup=InlineKeyboardMarkup(
+                            inline_keyboard=[
+                                [soundcloud_button(track_info["permalink_url"])]
+                            ]
+                        ),
+                    )
+                else:
+                    # Handle system error
+                    await handle_download_failure(
+                        bot=bot,
+                        message_id=message.message_id,
+                        track_info=track_info,
+                        error_message="Failed to send audio file due to a system error",
+                        track_search_queries_dict=track_search_queries,
+                    )
 
             # Clean up files if needed (not cached)
             if should_cleanup:
@@ -1146,6 +1318,18 @@ async def download_callback(callback: CallbackQuery):
 
         # For inline messages, update to processing status
         if callback.inline_message_id:
+            # First, only update the buttons to show downloading status
+            try:
+                await bot.edit_message_reply_markup(
+                    inline_message_id=callback.inline_message_id,
+                    reply_markup=InlineKeyboardMarkup(
+                        inline_keyboard=[[download_progress_button()]]
+                    ),
+                )
+                logger.info("Updated buttons to show downloading status")
+            except Exception as e:
+                logger.warning(f"Error updating buttons to downloading status: {e}")
+
             # Store the user ID for this inline message ID if not already stored
             if (
                 callback.inline_message_id not in inline_message_users
@@ -1156,260 +1340,161 @@ async def download_callback(callback: CallbackQuery):
                     f"Stored user ID {callback.from_user.id} for inline message {callback.inline_message_id}"
                 )
 
-            # Check if the user has DMs open with the bot
-            user_id = callback.from_user.id if callback.from_user else None
-
-            if user_id:
-                # Get track info to show in the message
-                track_data = await get_track(track_id)
-                if not track_data:
-                    await callback.answer(
-                        "Error: Could not get track info. Please try again.",
-                        show_alert=True,
-                    )
-                    return
-
-                track_info = get_track_info(track_data)
-
-                # Get bot info for the permission message
-                bot_info = await bot.get_me()
-                bot_user = {
-                    "username": bot_info.username,
-                    "id": bot_info.id,
-                    "name": bot_info.full_name,
-                }
-
-                # Check if the user has started the bot after the last try
-                has_started_bot = False
-                try:
-                    # Try to send a service message to check if user has DM access
-                    test_message = await bot.send_message(
-                        user_id, "Checking access...", disable_notification=True
-                    )
-                    has_started_bot = True
-                    # Delete the test message immediately
-                    await bot.delete_message(user_id, test_message.message_id)
-                except Exception as e:
-                    # If we get an error, user hasn't started the bot yet
-                    logger.info(f"User {user_id} has not started the bot yet: {e}")
-                    has_started_bot = False
-
-                if not has_started_bot:
-                    # Show chat access needed message again but update timestamp to make it clear it's a new attempt
-                    await fallback_to_direct_message(
-                        callback.inline_message_id,
-                        track_id,
-                        track_info,
-                        bot_user,
-                        search_query,
-                    )
-
-                    # Show more detailed instructions in an alert
-                    await callback.answer(
-                        "Please open a chat with the bot first and send /start, then try again.",
-                        show_alert=True,
-                    )
-                    return
-
-                # User has DMs open, we need to update the inline message instead of just sending a DM
-                logger.info(
-                    f"User {user_id} has DMs open, updating inline message directly"
-                )
-
-                # Start a task to download and update the inline message
-                # This will handle both the DM (to get file_id) and the inline message update
-                update_task = asyncio.create_task(
-                    download_and_update_inline_message(
-                        callback.inline_message_id, track_id, search_query
-                    )
-                )
-                download_tasks[callback.inline_message_id] = update_task
-
-                # Show confirmation to the user that download has started
-                await callback.answer(
-                    "Download started! The track will appear shortly.",
-                    show_alert=False,
-                )
-
-                # We've started the inline message update task, so return early
-                # This prevents the function from proceeding to the regular DM flow below
-                return
-            # For regular messages, don't update text to keep original caption
-            elif callback.message:
-                # Skip updating text message to keep original caption
-                logger.info(
-                    "Skipping text update to keep original caption as per user request"
-                )
-                pass
-
-            # Get chat ID for sending messages
-            chat_id = None
-            original_message_id = None
-            if callback.message:
-                chat_id = callback.message.chat.id
-                original_message_id = callback.message.message_id
-            # For inline messages, we need to get the chat ID from the from_user
-            elif callback.from_user:
-                chat_id = callback.from_user.id
-                original_message_id = None
-
-            if not chat_id:
-                logger.warning(f"Cannot determine chat ID for track_id: {track_id}")
-                await callback.answer(
-                    "Cannot determine where to send the audio. Please try in a private chat.",
-                    show_alert=True,
-                )
-                return
-
-            # Get bot info for metadata
+            # Get bot info for metadata first - we'll need this for any messaging
             bot_info = await bot.get_me()
             bot_user = {
                 "username": bot_info.username,
                 "id": bot_info.id,
                 "name": bot_info.full_name,
             }
-            # Download the actual track
-            logger.info(f"Calling download_track function for track ID: {track_id}")
-            download_start = time.time()
-            download_result = await download_track(track_id, bot_user)
-            download_time = time.time() - download_start
 
-            # Track info for either success or failure cases
-            track_info = get_track_info(download_result.get("track_data", {}))
-
-            # Add Spotify URL if provided
-            spotify_url = None
-            if hasattr(download_result, "spotify_url"):
-                spotify_url = download_result.spotify_url
-                track_info["spotify_url"] = spotify_url
-
-            if download_result["success"]:
-                # Track downloaded successfully - now validate it
-                filepath = download_result["filepath"]
-
-                # Validate the downloaded track
-                is_valid, error_message = await validate_downloaded_track(
-                    filepath, track_info
+            # First, get track data to format our message
+            try:
+                track_data = await get_track(track_id)
+                track_info = get_track_info(track_data)
+                # Add search query as Spotify URL if it looks like a Spotify URL
+                if search_query and "spotify.com" in search_query:
+                    track_info["spotify_url"] = search_query
+            except Exception as e:
+                logger.error(f"Failed to get track info for {track_id}: {e}")
+                await callback.answer(
+                    "Error retrieving track information. Please try again.",
+                    show_alert=True,
                 )
+                return
 
-                if not is_valid:
-                    logger.warning(
-                        f"Downloaded track validation failed: {error_message}"
-                    )
-
-                    # Format the error message for inline message
-                    validation_failure_text = format_error_caption(
-                        "Invalid track: " + error_message, track_info, bot_info.username
-                    )
-
-                    # Include the search query if provided
-                    if search_query:
-                        validation_failure_text += f"\n\n<b>Query:</b> <code>{html.escape(search_query)}</code>"
-
-                    # Try to update message if possible
-                    try:
-                        if callback.message:
-                            await callback.message.edit_text(
-                                validation_failure_text,
-                                reply_markup=None,  # No buttons
-                            )
-                        elif callback.inline_message_id:
-                            await bot.edit_message_text(
-                                inline_message_id=callback.inline_message_id,
-                                text=validation_failure_text,
-                                reply_markup=None,  # No buttons
-                            )
-                    except Exception as e:
-                        logger.error(
-                            f"Error updating message with validation failure: {e}"
-                        )
-
-                    # Show an alert for validation failures
-                    await callback.answer(
-                        f"Invalid track: {error_message}", show_alert=True
-                    )
-                    return
-
-                # Track is valid, proceed with normal processing
-                logger.info(
-                    f"Download successful in {download_time:.2f} seconds: {download_result.get('filepath')}"
+            # Start a task to download and update the inline message
+            # This will handle both the DM (to get file_id) and the inline message update
+            update_task = asyncio.create_task(
+                download_and_update_inline_message(
+                    callback.inline_message_id, track_id, search_query
                 )
+            )
+            download_tasks[callback.inline_message_id] = update_task
 
-                # Get artwork URL for a hyperlink
-                artwork_url = track_info.get("artwork_url") or ""
-                if artwork_url:
-                    # Convert to high resolution
-                    artwork_url = get_high_quality_artwork_url(artwork_url)
+            # Show confirmation to the user that download has started
+            await callback.answer(
+                "Download started! The track will appear shortly.",
+                show_alert=False,
+            )
 
-                try:
+            # We've started the inline message update task, so return early
+            # This prevents the function from proceeding to the regular DM flow below
+            return
 
-                    await send_audio_file(
-                        bot=bot,
-                        chat_id=chat_id,
-                        filepath=filepath,
-                        track_info=track_info,
-                        reply_to_message_id=original_message_id,
-                    )
-                except Exception as e:
-                    logger.error(f"Error sending audio: {e}")
+        # For regular messages, don't update text to keep original caption
+        elif callback.message:
+            # Skip updating text message to keep original caption
+            logger.info(
+                "Skipping text update to keep original caption as per user request"
+            )
+            pass
 
-                    # Try to update messages with error information
-                    error_text = format_error_caption(
-                        f"Error: {str(e)[:200]}", track_info, bot_info.username
-                    )
+        # Get chat ID for sending messages
+        chat_id = None
+        if callback.message:
+            chat_id = callback.message.chat.id
+        # For inline messages, we need to get the chat ID from the from_user
+        elif callback.from_user:
+            chat_id = callback.from_user.id
 
-                    try:
-                        if callback.message:
-                            await callback.message.edit_text(
-                                error_text,
-                                reply_markup=None,  # No buttons
-                            )
-                        elif callback.inline_message_id:
-                            await bot.edit_message_text(
-                                inline_message_id=callback.inline_message_id,
-                                text=error_text,
-                                reply_markup=None,  # No buttons
-                            )
-                    except Exception as msg_update_err:
-                        logger.error(
-                            f"Error updating message with error: {msg_update_err}"
-                        )
-            else:
-                # Download failed
-                error_message = download_result.get("message", "Unknown error")
-                logger.error(f"Download failed: {error_message}")
+        if not chat_id:
+            logger.warning(f"Cannot determine chat ID for track_id: {track_id}")
+            await callback.answer(
+                "Cannot determine where to send the audio. Please try in a private chat.",
+                show_alert=True,
+            )
+            return
 
-                # Format the error message
-                failure_text = format_error_caption(
-                    "Download failed: " + error_message, track_info, bot_info.username
+        # Get bot info for metadata
+        bot_info = await bot.get_me()
+        bot_user = {
+            "username": bot_info.username,
+            "id": bot_info.id,
+            "name": bot_info.full_name,
+        }
+        # Download the actual track
+        logger.info(f"Calling download_track function for track ID: {track_id}")
+        download_result = await download_track(track_id, bot_user)
+
+        # Track info for either success or failure cases
+        track_info = get_track_info(download_result.get("track_data", {}))
+
+        # Add Spotify URL if provided
+        spotify_url = None
+        if search_query and "spotify.com" in search_query:
+            spotify_url = search_query
+            track_info["spotify_url"] = spotify_url
+
+        if download_result["success"]:
+            # Track downloaded successfully - now validate it
+            filepath = download_result["filepath"]
+
+            # Validate the downloaded track
+            is_valid, error_message = await validate_downloaded_track(
+                filepath, track_info
+            )
+
+            if not is_valid:
+                logger.warning(f"Downloaded track validation failed: {error_message}")
+
+                # Format the error message for inline message
+                validation_failure_text = format_error_caption(
+                    "Invalid track: " + error_message, track_info, bot_info.username
                 )
-
-                # Include the search query if provided
-                if search_query:
-                    failure_text += (
-                        f"\n\n<b>Query:</b> <code>{html.escape(search_query)}</code>"
-                    )
 
                 # Try to update message if possible
                 try:
                     if callback.message:
+                        # For regular messages, we might still need to update the text
                         await callback.message.edit_text(
-                            failure_text,
+                            validation_failure_text,
                             reply_markup=None,  # No buttons
                         )
                     elif callback.inline_message_id:
-                        await bot.edit_message_text(
+                        # For inline messages, use the helper to update only the buttons
+                        await update_buttons_with_error_status(
+                            bot=bot,
                             inline_message_id=callback.inline_message_id,
-                            text=failure_text,
-                            reply_markup=None,  # No buttons
+                            track_id=track_id,
+                            track_info=track_info,
+                            error_type="validation",
+                            error_message=error_message,
                         )
                 except Exception as e:
-                    logger.error(f"Error updating message with failure: {e}")
+                    logger.error(f"Error updating message with validation failure: {e}")
+        else:
+            # Download failed
+            error_message = download_result.get("message", "Unknown error")
+            logger.error(f"Download failed: {error_message}")
 
-                # Always show an alert for download failures
-                await callback.answer(
-                    f"Download failed: {error_message}", show_alert=True
-                )
+            # Format the error message
+            failure_text = format_error_caption(
+                "Download failed: " + error_message, track_info, bot_info.username
+            )
+
+            # Try to update message if possible
+            try:
+                if callback.message:
+                    await callback.message.edit_text(
+                        failure_text,
+                        reply_markup=None,  # No buttons
+                    )
+                elif callback.inline_message_id:
+                    # For inline messages, use the helper to update only the buttons
+                    await update_buttons_with_error_status(
+                        bot=bot,
+                        inline_message_id=callback.inline_message_id,
+                        track_id=track_id,
+                        track_info=track_info,
+                        error_type="download",
+                        error_message=error_message,
+                    )
+            except Exception as e:
+                logger.error(f"Error updating message with failure: {e}")
+
+            # Always show an alert for download failures
+            await callback.answer(f"Download failed: {error_message}", show_alert=True)
 
     except Exception as e:
         logger.error(f"Error in download callback: {e}")
@@ -1803,3 +1888,115 @@ async def process_download_queue():
             logger.error(f"Error in download queue worker: {e}", exc_info=True)
             # Sleep briefly to avoid CPU spinning in case of continuous errors
             await asyncio.sleep(1)
+
+
+@router.callback_query(F.data == "error_info")
+async def error_info_callback(callback: CallbackQuery):
+    """Handle error info button click"""
+    await callback.answer(
+        "There was a technical error processing your request. This is an internal system error, not a permissions issue. Please try again later.",
+        show_alert=True,
+        cache_time=5,
+    )
+
+
+@router.callback_query(F.data == "permission_info")
+async def permission_info_callback(callback: CallbackQuery):
+    """Handle permission info button click"""
+    await callback.answer(
+        "You need to message the bot directly first before it can send you files. Click the button below to open a chat with the bot.",
+        show_alert=True,
+    )
+
+
+@router.callback_query(F.data == "too_many_errors")
+async def too_many_errors_callback(callback: CallbackQuery):
+    """Handle too many errors button click"""
+    await callback.answer(
+        "There have been multiple errors trying to process this track. Please try a different track or try again later.",
+        show_alert=True,
+    )
+
+
+# Track consecutive error attempts
+consecutive_errors = {}
+
+
+async def update_buttons_with_error_status(
+    bot: Bot,
+    inline_message_id: str,
+    track_id: str,
+    track_info: Dict[str, Any],
+    error_type: str,
+    error_message: str,
+):
+    """Update only the buttons when an error occurs, tracking consecutive errors.
+
+    Args:
+        bot: Bot instance
+        inline_message_id: Inline message ID
+        track_id: Track ID
+        track_info: Track metadata
+        error_type: Type of error (e.g., 'download', 'permission', 'system')
+        error_message: Error message to display
+    """
+    # Track error for this message
+    if inline_message_id not in consecutive_errors:
+        consecutive_errors[inline_message_id] = 1
+    else:
+        consecutive_errors[inline_message_id] += 1
+
+    error_count = consecutive_errors[inline_message_id]
+    logger.info(f"Error count for message {inline_message_id}: {error_count}")
+
+    # If too many consecutive errors, show a different button
+    if error_count >= 3:
+        try:
+            await bot.edit_message_reply_markup(
+                inline_message_id=inline_message_id,
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [soundcloud_button(track_info["permalink_url"])],
+                        [
+                            InlineKeyboardButton(
+                                text="❌ Too Many Errors - Try Different Track",
+                                callback_data="too_many_errors",
+                            )
+                        ],
+                    ]
+                ),
+            )
+            logger.info("Updated buttons to show too many errors status")
+        except Exception as e:
+            logger.error(f"Error updating buttons for too many errors: {e}")
+    else:
+        # Regular error handling with try again option
+        try:
+            error_prefix = "❌ "
+            if error_type == "permission":
+                error_prefix = "🔒 "
+
+            await bot.edit_message_reply_markup(
+                inline_message_id=inline_message_id,
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [soundcloud_button(track_info["permalink_url"])],
+                        [try_again_button(track_id)],
+                        [
+                            InlineKeyboardButton(
+                                text=f"{error_prefix}{error_type.title()} Error: "
+                                + error_message[:25]
+                                + "...",
+                                callback_data=(
+                                    "error_info"
+                                    if error_type != "permission"
+                                    else "permission_info"
+                                ),
+                            )
+                        ],
+                    ]
+                ),
+            )
+            logger.info(f"Updated buttons to show {error_type} error status")
+        except Exception as e:
+            logger.error(f"Error updating buttons for {error_type} error: {e}")
