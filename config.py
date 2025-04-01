@@ -32,5 +32,13 @@ MAX_PLAYLIST_TRACKS_TO_SHOW = 50  # Maximum number of tracks to display from a p
 # SoundCloud logo URL
 SOUNDCLOUD_LOGO_URL = "https://d21buns5ku92am.cloudfront.net/26628/images/419679-1x1_SoundCloudLogo_cloudmark-f5912b-original-1645807040.jpg"
 
+# Cache settings
+FILE_ID_CACHE_EXPIRY = int(
+    os.getenv("FILE_ID_CACHE_EXPIRY", 86400)
+)  # Default: 24 hours in seconds
+CACHE_CLEANUP_INTERVAL = int(
+    os.getenv("CACHE_CLEANUP_INTERVAL", 3600)
+)  # Default: 1 hour in seconds
+
 # Version
 VERSION = "0.8.5"

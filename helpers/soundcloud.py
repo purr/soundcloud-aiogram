@@ -659,20 +659,27 @@ async def download_audio_fallback(url: str, filepath: str) -> bool:
     """
     logger.info(f"Using fallback download method for {url}")
     try:
-        import requests
-
-        # Try to use requests library for direct download
-        # This is synchronous but might work better for some URLs
-        r = requests.get(url, stream=True, timeout=30)
-        r.raise_for_status()
-
         # Create directory if it doesn't exist
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
 
-        # Write file in chunks
-        with open(filepath, "wb") as f:
-            for chunk in r.iter_content(chunk_size=8192):
-                f.write(chunk)
+        # Use aiohttp for asynchronous HTTP requests instead of synchronous requests
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=30) as response:
+                if response.status != 200:
+                    logger.error(f"Fallback download HTTP error: {response.status}")
+                    return False
+
+                # Create directory if it doesn't exist
+                os.makedirs(os.path.dirname(filepath), exist_ok=True)
+
+                # Write file in chunks asynchronously
+                with open(filepath, "wb") as f:
+                    chunk_size = 8192
+                    while True:
+                        chunk = await response.content.read(chunk_size)
+                        if not chunk:
+                            break
+                        f.write(chunk)
 
         logger.info(f"Fallback download completed: {filepath}")
 
@@ -1023,62 +1030,76 @@ async def add_id3_tags(filepath: str, track_data: dict) -> None:
                 f"Final values for ID3 tags - Artist: '{artist}', Title: '{title}'"
             )
 
-        # Create or clear existing tags
-        audio = mutagen.File(filepath, easy=True)
-        if audio is None:
-            logger.warning(f"Could not add tags to {filepath} - unsupported format")
-            return
+        # Define synchronous functions to run in a separate thread
+        def apply_basic_tags():
+            # Create or clear existing tags
+            audio = mutagen.File(filepath, easy=True)
+            if audio is None:
+                logger.warning(f"Could not add tags to {filepath} - unsupported format")
+                return False
 
-        # Clear existing tags
-        audio.delete()
+            # Clear existing tags
+            audio.delete()
 
-        # Set new tags
-        audio["title"] = title
-        audio["artist"] = artist
+            # Set new tags
+            audio["title"] = title
+            audio["artist"] = artist
 
-        # Set album to artist name if not available
-        album = track_data.get("album", artist)
-        audio["album"] = album
+            # Set album to artist name if not available
+            album = track_data.get("album", artist)
+            audio["album"] = album
 
-        # Add date if available
-        if "created_at" in track_data:
+            # Add date if available
+            if "created_at" in track_data:
+                try:
+                    release_date = track_data["created_at"].split("T")[
+                        0
+                    ]  # Get YYYY-MM-DD
+                    audio["date"] = release_date
+                except (ValueError, IndexError, AttributeError):
+                    pass
+
+            # Set genre if available
+            if track_data.get("genre"):
+                audio["genre"] = track_data["genre"]
+
+            # Save basic tags
+            audio.save()
+            return True
+
+        def apply_id3_specific_tags():
             try:
-                release_date = track_data["created_at"].split("T")[0]  # Get YYYY-MM-DD
-                audio["date"] = release_date
-            except (ValueError, IndexError, AttributeError):
-                pass
+                id3 = ID3(filepath)
 
-        # Set genre if available
-        if track_data.get("genre"):
-            audio["genre"] = track_data["genre"]
+                # Add description as comment if available
+                if track_data.get("description"):
+                    from mutagen.id3 import COMM
 
-        # Save basic tags first
-        audio.save()
-
-        # Add description as comment using ID3 specific tags
-        try:
-            id3 = ID3(filepath)
-
-            # Add description as comment if available
-            if track_data.get("description"):
-                from mutagen.id3 import COMM
-
-                id3.add(
-                    COMM(
-                        encoding=3,  # UTF-8
-                        lang="eng",
-                        desc="Description",
-                        text=track_data["description"],
+                    id3.add(
+                        COMM(
+                            encoding=3,  # UTF-8
+                            lang="eng",
+                            desc="Description",
+                            text=track_data["description"],
+                        )
                     )
-                )
 
-            # Save ID3 tags
-            id3.save(v2_version=3)
+                # Save ID3 tags
+                id3.save(v2_version=3)
+                return True
+            except Exception as e:
+                logger.warning(f"Error adding ID3 specific tags: {e}")
+                return False
 
-        except Exception as e:
-            logger.warning(f"Error adding ID3 specific tags: {e}")
+        # Run the mutagen operations in separate threads to avoid blocking the event loop
+        basic_tags_success = await asyncio.to_thread(apply_basic_tags)
 
-        logger.info(f"ID3 tags successfully added to {filepath}")
+        if basic_tags_success:
+            await asyncio.to_thread(apply_id3_specific_tags)
+            logger.info(f"ID3 tags successfully added to {filepath}")
+        else:
+            logger.warning(f"Failed to apply basic tags to {filepath}")
+
     except Exception as e:
         logger.error(f"Error adding ID3 tags to {filepath}: {e}")
 
