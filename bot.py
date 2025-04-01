@@ -274,10 +274,20 @@ async def inline_search(query: InlineQuery):
                     minutes, seconds = divmod(duration_ms // 1000, 60)
                     duration_str = f"{minutes}:{seconds:02d}"
 
+                    # Ensure display_title is never empty
+                    display_title = track_info.get("display_title", "")
+                    if not display_title or display_title.strip() == "":
+                        display_title = "Untitled Track"
+                        logger.warning(
+                            f"Empty display_title for track ID {track_id}, setting to 'Untitled Track'"
+                        )
+                        # Update the track_info to ensure future references have the title too
+                        track_info["display_title"] = display_title
+
                     # Create result for this track
                     track_result = InlineQueryResultArticle(
                         id=f"{track_id}_{i}",
-                        title=f"{i + 1}. {track_info['display_title']}",
+                        title=f"{i + 1}. {display_title}",
                         description=f"By {track_info['artist']} • {duration_str}",
                         input_message_content=InputTextMessageContent(
                             message_text=format_track_info_caption(
@@ -309,10 +319,20 @@ async def inline_search(query: InlineQuery):
                     # Calculate duration of the track
                     duration_str = track_info.get("duration", "0:00")
 
+                    # Ensure display_title is never empty
+                    display_title = track_info.get("display_title", "")
+                    if not display_title or display_title.strip() == "":
+                        display_title = "Untitled Track"
+                        logger.warning(
+                            f"Empty display_title for track ID {track_id}, setting to 'Untitled Track'"
+                        )
+                        # Update the track_info to ensure future references have the title too
+                        track_info["display_title"] = display_title
+
                     # Create result for this track
                     track_result = InlineQueryResultArticle(
                         id=f"{track_id}_{i}",
-                        title=f"{i + 1}. {track_info['display_title']}",
+                        title=f"{i + 1}. {display_title}",
                         description=f"By {track_info['artist']} • {duration_str}",
                         input_message_content=InputTextMessageContent(
                             message_text=format_track_info_caption(
@@ -392,7 +412,17 @@ async def inline_search(query: InlineQuery):
         if track_id and track_data:
             # Get track info
             track_info = get_track_info(track_data)
-            track_title = track_info["title"]
+
+            # Ensure track title is never empty
+            track_title = track_info.get("title", "")
+            if not track_title or track_title.strip() == "":
+                track_title = "Untitled Track"
+                logger.warning(
+                    f"Empty title for track ID {track_id}, setting to 'Untitled Track'"
+                )
+                track_info["title"] = track_title
+
+            # Get other track info
             track_artist = track_info["artist"]
             track_duration = track_info["duration"]
 
@@ -527,10 +557,20 @@ async def debounced_search(search_text: str, query: InlineQuery):
             if track_info.get("genre"):
                 description += f" • {track_info['genre']}"
 
+            # Ensure we have a valid title for the article result
+            display_title = track_info.get("display_title", "")
+            if not display_title or display_title.strip() == "":
+                display_title = "Untitled Track"
+                logger.warning(
+                    f"Empty display_title for track ID {track_info['id']}, setting to 'Untitled Track'"
+                )
+                # Update the track_info to ensure future references have the title too
+                track_info["display_title"] = display_title
+
             # Create article result
             article_result = InlineQueryResultArticle(
                 id=result_id,
-                title=track_info["display_title"],
+                title=display_title,
                 description=description,
                 thumbnail_url=artwork_url,
                 input_message_content=InputTextMessageContent(
@@ -558,18 +598,30 @@ async def debounced_search(search_text: str, query: InlineQuery):
         logger.debug("Search task was cancelled")
         pass
     except Exception as e:
-        logger.error(f"Error in debounced search: {e}")
+        logger.error(f"Error in debounced search: {e}", exc_info=True)
         # Try to answer with an error message
         try:
+            # Create a more specific error message based on error type
+            error_message = "Error occurred, try again"
+            error_details = str(e)
+
+            if "ARTICLE_TITLE_EMPTY" in error_details:
+                logger.error("Empty article title detected in search results")
+                error_message = "Search terms produced invalid results"
+            elif "Bad Request" in error_details:
+                error_message = "Invalid search request"
+
             await query.answer(
                 results=[],
                 cache_time=5,
                 is_personal=True,
-                switch_pm_text="Error occurred, try again",
+                switch_pm_text=error_message,
                 switch_pm_parameter="error",
             )
         except Exception as answer_err:
-            logger.error(f"Failed to answer inline query with error: {answer_err}")
+            logger.error(
+                f"Failed to answer inline query with error: {answer_err}", exc_info=True
+            )
             pass
 
 

@@ -82,6 +82,24 @@ async def search_soundcloud(query: str, limit: int = 50) -> dict:
     else:
         logger.info(f"Searching SoundCloud for: '{query}'")
 
+    # Handle "skip to" queries by removing that part before searching
+    skip_to_pattern = re.compile(
+        r"(?:skip(?:\s+to)?\s+\d+(?::\d+|[mM]\d*|\s+min(?:ute)?s?)?)",
+        re.IGNORECASE,
+    )
+
+    original_query = query
+    cleaned_query = skip_to_pattern.sub("", query).strip()
+
+    # If the cleaned query is empty or too short, use the original query
+    if not cleaned_query or len(cleaned_query) < 3:
+        search_query = original_query
+    else:
+        logger.info(
+            f"Modified search query from '{original_query}' to '{cleaned_query}'"
+        )
+        search_query = cleaned_query
+
     try:
         # Get a valid client ID
         client_id = await get_cached_client_id()
@@ -90,14 +108,14 @@ async def search_soundcloud(query: str, limit: int = 50) -> dict:
         async with aiohttp.ClientSession() as session:
             # Ensure API URL has the correct format and parameters
             params = {
-                "q": query,
+                "q": search_query,
                 "limit": limit,
                 "client_id": client_id,
             }
 
             # Log the request URL with parameters
             if DEBUG_SEARCH:
-                url = f"{SOUNDCLOUD_SEARCH_API}?q={query}&limit={limit}&client_id={client_id}"
+                url = f"{SOUNDCLOUD_SEARCH_API}?q={search_query}&limit={limit}&client_id={client_id}"
                 logger.info(f"Request URL: {url}")
 
             async with session.get(SOUNDCLOUD_SEARCH_API, params=params) as response:
@@ -1518,13 +1536,22 @@ def get_track_info(track: dict) -> dict:
     )
 
     cleaned_title = skip_to_pattern.sub("", title).strip()
-    if cleaned_title != title:
+    # Only use cleaned title if it's not empty and different from the original
+    if cleaned_title and cleaned_title != title:
         if DEBUG_EXTRACTIONS:
             logger.info(
                 f"TRACK {track_id}: Removed 'skip' marker from title: '{title}' -> '{cleaned_title}'"
             )
         title = cleaned_title
         display_title = cleaned_title
+
+    # Ensure display_title is never empty
+    if not display_title or display_title.strip() == "":
+        display_title = "Untitled Track"
+        if DEBUG_EXTRACTIONS:
+            logger.info(
+                f"TRACK {track_id}: Empty display title, setting to 'Untitled Track'"
+            )
 
     # Get artwork URL
     artwork_url = track.get("artwork_url", "")

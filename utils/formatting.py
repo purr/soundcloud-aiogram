@@ -60,8 +60,15 @@ def format_track_info_caption(track_info: Dict, bot_username: str) -> str:
     Returns:
         Formatted caption HTML string
     """
-    permalink_url = track_info["permalink_url"]
+    # Ensure track_info has all required keys
+    permalink_url = track_info.get("permalink_url", "https://soundcloud.com")
     artwork_url = track_info.get("artwork_url")
+    display_title = track_info.get("display_title", "")
+
+    # Ensure display_title is not empty
+    if not display_title or display_title.strip() == "":
+        display_title = "Untitled Track"
+        track_info["display_title"] = display_title
 
     # Create initial caption with SoundCloud track link
     # Using zero-width space (\u200c) inside the URL to prevent embedding while keeping it clickable
