@@ -1026,6 +1026,17 @@ def extract_artist_title(title: str) -> Tuple[str, str]:
     dash_separators_both_spaces = [f" {dash} " for dash in dash_chars]
     dash_separators_after_space = [f"{dash} " for dash in dash_chars]
     dash_separators_before_space = [f" {dash}" for dash in dash_chars]
+    dash_separators_without_space = [f"{dash}" for dash in dash_chars]
+
+    total_count = 0
+    for dash in dash_chars:
+        if dash in title:
+            total_count += title.count(dash)
+
+    if total_count > 1:
+        if DEBUG_EXTRACTIONS:
+            logger.info(f"EXTRACT: ABORTED - Multiple separators found: {total_count}")
+        return None, title
 
     if DEBUG_EXTRACTIONS:
         logger.debug(
@@ -1121,6 +1132,31 @@ def extract_artist_title(title: str) -> Tuple[str, str]:
             logger.info("EXTRACT: ABORTED - Multiple separators with space before only")
         return None, title
 
+    # Step 4: Check for dashes without spaces (e.g. "-")
+    if DEBUG_EXTRACTIONS:
+        logger.debug("EXTRACT: Checking separators without spaces")
+
+    dash_counts = {sep: title.count(sep) for sep in dash_separators_without_space}
+    total_dashes_without_space = sum(dash_counts.values())
+
+    if total_dashes_without_space == 1:
+        # Found exactly one dash with spaces on both sides, use it
+        for dash in dash_separators_without_space:
+            if dash in title:
+                artist_title = title.split(dash, maxsplit=1)
+                artist = artist_title[0].strip()
+                new_title = artist_title[1].strip()
+                if DEBUG_EXTRACTIONS:
+                    logger.info(
+                        f"EXTRACT: SUCCESS with spaces both sides - Artist: '{artist}', Title: '{new_title}'"
+                    )
+                return artist, new_title
+    elif total_dashes_without_space > 1:
+        # More than one dash with spaces on both sides, abort
+        if DEBUG_EXTRACTIONS:
+            logger.info("EXTRACT: ABORTED - Multiple separators without spaces")
+
+        return None, title
     # Fallback: If no structured separators were found, try generic regex pattern
     if DEBUG_EXTRACTIONS:
         logger.debug("EXTRACT: Trying regex fallback")
