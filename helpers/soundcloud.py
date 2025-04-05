@@ -1020,7 +1020,7 @@ def extract_artist_title(title: str) -> Tuple[str, str]:
         logger.info(f"EXTRACT: Beginning extraction for title: '{title}'")
 
     # Define dash characters to use
-    dash_chars = ["-", "−", "–", "—", "―"]
+    dash_chars = ["-", "−", "–", "—", "―", "by", "//"]
 
     # Create the three types of separators
     dash_separators_both_spaces = [f" {dash} " for dash in dash_chars]
