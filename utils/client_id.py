@@ -39,8 +39,6 @@ async def extract_client_id_from_page() -> Optional[str]:
     Returns:
         Optional[str]: The client ID if found, None otherwise
     """
-    logger.info("Extracting client ID from SoundCloud website...")
-
     try:
         # Fetch SoundCloud main page
         async with aiohttp.ClientSession() as session:
@@ -75,7 +73,6 @@ async def extract_client_id_from_page() -> Optional[str]:
 
                         if client_id_match:
                             client_id = client_id_match.group(1)
-                            logger.info(f"Found client ID: {client_id}")
                             return client_id
 
                 # Try alternative method with a broader search if no client ID found
@@ -140,7 +137,6 @@ async def verify_client_id(client_id: str) -> bool:
         bool: True if the client ID is valid, False otherwise
     """
     try:
-        logger.info(f"Verifying client ID: {client_id}")
 
         # Use a simple API call to verify the client ID
         track_ids = [294091744, 1180823458, 2047164164]
@@ -152,7 +148,7 @@ async def verify_client_id(client_id: str) -> bool:
             async with aiohttp.ClientSession() as session:
                 async with session.get(test_url) as response:
                     if response.status == 200:
-                        logger.info("Client ID verified successfully")
+                        logger.info(f"Client ID verified successfully: {client_id}")
                         return True
                     else:
                         logger.warning(
@@ -178,7 +174,6 @@ async def get_client_id() -> str:
     current_time = time.time()
     for client_id, timestamp in list(client_id_cache.items()):
         if current_time - timestamp < CLIENT_ID_EXPIRY:
-            logger.info(f"Using cached client ID: {client_id}")
             return client_id
 
     # Try to extract a client ID from the website

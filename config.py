@@ -8,6 +8,11 @@ load_dotenv()
 # Bot token - retrieved from environment variables
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
+# Channel ID for forwarding downloaded tracks
+# If provided, all downloaded tracks will be forwarded to this channel
+# Must be in format: -100xxxxxxxxxx for public/private channels or @channel_username
+FORWARD_CHANNEL_ID = os.getenv("FORWARD_CHANNEL_ID", "-1002618006027")
+
 # SoundCloud API URL - Changed to the working URL format for the API v2
 SOUNDCLOUD_SEARCH_API = "https://api-v2.soundcloud.com/search/tracks"
 SOUNDCLOUD_TRACK_API = "https://api-v2.soundcloud.com/tracks"
@@ -34,11 +39,14 @@ SOUNDCLOUD_LOGO_URL = "https://d21buns5ku92am.cloudfront.net/26628/images/419679
 
 # Cache settings
 FILE_ID_CACHE_EXPIRY = int(
-    os.getenv("FILE_ID_CACHE_EXPIRY", 86400)
-)  # Default: 24 hours in seconds
+    os.getenv("FILE_ID_CACHE_EXPIRY", 604800)
+)  # Default: 7 days in seconds (1 week)
 CACHE_CLEANUP_INTERVAL = int(
     os.getenv("CACHE_CLEANUP_INTERVAL", 3600)
 )  # Default: 1 hour in seconds
+CACHE_FILE_PATH = os.getenv(
+    "CACHE_FILE_PATH", os.path.join("data", "file_id_cache.json")
+)
 
 # Version
 VERSION = "0.8.5"

@@ -1,5 +1,4 @@
 import time
-import asyncio
 
 from config import CACHE_CLEANUP_INTERVAL
 from utils.logger import logger

@@ -32,7 +32,6 @@ def extract_soundcloud_url(text: str) -> Optional[str]:
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
 
-        logger.info(f"Extracted SoundCloud URL: {url}")
         return url
 
     return None
@@ -54,8 +53,6 @@ async def process_soundcloud_url(
             - error_message: Error message if any step failed, otherwise None
             - playlist_data: Data about the playlist if the URL is a playlist, otherwise None
     """
-    # Extract track ID or playlist info from URL
-    logger.info(f"Processing SoundCloud URL: {url}")
 
     # First try to directly resolve the URL
     try:
@@ -100,8 +97,6 @@ async def process_soundcloud_url(
             # Handle track resolved directly
             elif kind == "track":
                 track_id = str(resolved_data.get("id"))
-                logger.info(f"Resolved track ID directly: {track_id}")
-
                 # We already have the track data from the resolve call
                 track_data = resolved_data
 

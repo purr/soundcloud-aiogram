@@ -13,6 +13,7 @@ from pydub import AudioSegment
 from aiogram import Bot
 from aiogram.enums import ParseMode
 from aiogram.types import (
+    Message,
     FSInputFile,
     URLInputFile,
     InputMediaAudio,
@@ -22,11 +23,7 @@ from aiogram.types import (
 )
 from pydub.silence import detect_nonsilent
 
-from utils import (
-    format_error_caption,
-    format_track_info_caption,
-    get_high_quality_artwork_url,
-)
+from utils import format_error_caption, format_track_info_caption
 from predefined import (
     artist_button,
     try_again_button,
@@ -34,10 +31,14 @@ from predefined import (
     download_progress_button,
 )
 from utils.logger import logger
-from utils.formatting import get_low_quality_artwork_url
 
 from .cache import file_id_cache
-from .soundcloud import cleanup_files
+from .soundcloud import (
+    cleanup_files,
+    download_audio,
+    get_low_quality_artwork_url,
+    get_high_quality_artwork_url,
+)
 
 
 async def validate_downloaded_track(
@@ -562,20 +563,15 @@ async def get_resized_thumbnail(
 async def detect_and_remove_silence(
     filepath: str, threshold_db: float = -55.0, min_silence_duration: int = 5000
 ) -> str:
-    """
-    Aggressively detect and remove silence from audio files.
-
-    This function removes:
-    1. All silence at the beginning and end of the track
-    2. Long silence gaps (including extreme cases like 1-minute silent sections)
+    """Detect and remove silence from audio file.
 
     Args:
-        filepath: Path to the audio file
-        threshold_db: Threshold in dB below which audio is considered silence
-        min_silence_duration: Minimum silence duration to detect in milliseconds
+        filepath: Path to audio file
+        threshold_db: Threshold in dB to consider as silence (default -55.0)
+        min_silence_duration: Minimum duration of silence to remove in ms (default 5000)
 
     Returns:
-        str: Path to the processed file (either the original if no silence or a new temp file)
+        str: Path to processed file (might be the same as input if no silence)
     """
     try:
         # Skip processing if file doesn't exist
@@ -637,7 +633,7 @@ async def detect_and_remove_silence(
                     middle_silence += gap
                     if gap > 10000:  # Log large gaps (10+ seconds)
                         logger.info(
-                            f"Found large silence gap: {gap}ms between segments {i} and {i+1}"
+                            f"Found large silence gap: {gap}ms between segments {i} and {i + 1}"
                         )
 
             total_silence = edge_silence + middle_silence
@@ -719,6 +715,8 @@ async def send_audio_file(
     track_info: Dict[str, Any],
     reply_to_message_id: Optional[int] = None,
     inline_message_id: Optional[str] = None,
+    user_info: Optional[Dict[str, Any]] = None,
+    thumbnail: Optional[BufferedInputFile] = None,
 ) -> tuple[bool, Optional[str], Optional[Any]]:
     """Send audio file with proper formatting and metadata.
 
@@ -729,6 +727,8 @@ async def send_audio_file(
         track_info: Track metadata
         reply_to_message_id: Optional message ID to reply to
         inline_message_id: Optional inline message ID to update with removal status
+        user_info: Optional user information for attribution in channel forwarding
+        thumbnail: Optional pre-downloaded thumbnail for the audio
 
     Returns:
         tuple[bool, Optional[str], Optional[Any]]:
@@ -789,6 +789,11 @@ async def send_audio_file(
                 )
 
                 logger.info(f"Successfully sent audio using cached file_id")
+
+                # We'll skip forwarding to the channel here and do it after updating inline
+                # This is intentionally commented out as we'll forward after inline update
+                # await forward_to_channel_if_enabled(bot, result, user_info)
+
                 return True, None, result
 
             except Exception as e:
@@ -796,19 +801,17 @@ async def send_audio_file(
                 # Continue with normal upload if cached file_id fails
 
     try:
-        # Process audio to remove silence - more aggressive settings
-        processed_filepath = await detect_and_remove_silence(
-            filepath,
-            threshold_db=-55.0,  # Higher threshold to catch more subtle silence
-            min_silence_duration=5000,  # Lower minimum to 2 seconds for more aggressive removal
-        )
+        # Check if we have silence analysis information and if silence was detected
+        silence_analysis = track_info.get("silence_analysis", {})
+        has_silence = silence_analysis.get("has_silence", False)
 
-        # Track if we created a new file that needs cleanup
-        trimmed_file_created = processed_filepath != filepath
+        processed_filepath = filepath
 
-        # If silence was removed, update the button to let the user know
-        if trimmed_file_created:
-            logger.info(f"Silence was detected and removed from audio file")
+        # Only process audio to remove silence if waveform analysis indicates silence
+        if has_silence:
+            logger.info(
+                f"Waveform analysis indicates silence: {silence_analysis.get('silence_percentage', 0):.1f}% silent"
+            )
 
             # Update the inline message if provided
             if inline_message_id:
@@ -817,25 +820,58 @@ async def send_audio_file(
                         inline_message_id=inline_message_id,
                         reply_markup=InlineKeyboardMarkup(
                             inline_keyboard=[
-                                [download_progress_button("removing_silence")]
+                                [download_progress_button("checking_silence")]
                             ]
                         ),
                     )
-                    logger.info("Updated button to show silence removal status")
                 except Exception as e:
-                    logger.warning(
-                        f"Error updating button to silence removal status: {e}"
-                    )
+                    logger.warning(f"Error updating silence check status: {e}")
 
-            logger.info(f"Using trimmed audio file: {processed_filepath}")
-            filepath = processed_filepath
+            # Process audio to remove silence - more aggressive settings
+            processed_filepath = await detect_and_remove_silence(
+                filepath,
+                threshold_db=-55.0,  # Higher threshold to catch more subtle silence
+                min_silence_duration=5000,  # 5 seconds minimum for removal
+            )
+
+            # Track if we created a new file that needs cleanup
+            trimmed_file_created = processed_filepath != filepath
+
+            # If silence was removed, update the button to let the user know
+            if trimmed_file_created:
+                logger.info(f"Silence was detected and removed from audio file")
+
+                # Update the inline message if provided
+                if inline_message_id:
+                    try:
+                        await bot.edit_message_reply_markup(
+                            inline_message_id=inline_message_id,
+                            reply_markup=InlineKeyboardMarkup(
+                                inline_keyboard=[
+                                    [download_progress_button("removing_silence")]
+                                ]
+                            ),
+                        )
+                        logger.info("Updated button to show silence removal status")
+                    except Exception as e:
+                        logger.warning(
+                            f"Error updating button to silence removal status: {e}"
+                        )
+
+                logger.info(f"Using trimmed audio file: {processed_filepath}")
+                filepath = processed_filepath
+        else:
+            logger.info(
+                "No significant silence detected in waveform analysis, skipping silence removal"
+            )
 
         # Format caption and prepare audio file
         caption = format_track_info_caption(track_info, (await bot.get_me()).username)
         audio = FSInputFile(filepath)
 
         # Get thumbnail using the centralized worker function
-        thumbnail = await get_resized_thumbnail(track_info)
+        if not thumbnail:
+            thumbnail = await get_resized_thumbnail(track_info)
 
         logger.info("Sending audio with artwork thumbnail")
         try:
@@ -872,6 +908,8 @@ async def send_audio_file(
                 file_id = result.audio.file_id
                 file_id_cache.set(track_id, file_id)
                 logger.info(f"Cached file_id for track ID {track_id}")
+
+            # No channel forwarding here - we'll handle it after this function
 
         except Exception as send_err:
             # Check if this is a permission error
@@ -926,8 +964,39 @@ async def send_audio_file(
         return False, "system", None
 
 
+async def forward_to_channel_if_enabled(
+    bot: Bot, message: Message, user_info: Optional[Dict[str, Any]] = None
+) -> None:
+    """
+    Forward a message to the channel if channel forwarding is enabled.
+
+    Args:
+        bot: Bot instance
+        message: Message to forward
+        user_info: Optional user information for attribution
+    """
+    # Import here to avoid circular imports
+    from utils.channel import channel_manager
+
+    logger.info(
+        f"Attempting to forward message with user_info: {user_info is not None}"
+    )
+
+    # Use the channel manager to handle forwarding
+    result = await channel_manager.forward_message(bot, message, user_info)
+
+    if not result:
+        logger.info("Message was not forwarded to the channel")
+    else:
+        logger.info("Message was successfully forwarded to the channel")
+
+
 async def update_inline_message_with_audio(
-    bot: Bot, inline_message_id: str, file_id: str, track_info: Dict[str, Any]
+    bot: Bot,
+    inline_message_id: str,
+    file_id: str,
+    track_info: Dict[str, Any],
+    user_info: Optional[Dict[str, Any]] = None,
 ) -> bool:
     """Update inline message with audio using file_id.
 
@@ -936,6 +1005,7 @@ async def update_inline_message_with_audio(
         inline_message_id: Inline message ID to update
         file_id: Telegram file_id for the audio
         track_info: Track metadata
+        user_info: Optional user information for channel attribution
 
     Returns:
         bool: True if successful, False otherwise
@@ -946,8 +1016,7 @@ async def update_inline_message_with_audio(
 
         if artwork_url:
             # Ensure it's high quality
-            artwork_url = get_high_quality_artwork_url(artwork_url)
-            logger.info(f"Using high quality artwork URL: {artwork_url}")
+            artwork_url = get_low_quality_artwork_url(artwork_url)
         else:
             logger.warning("No artwork URL found in track_info")
 
@@ -971,6 +1040,8 @@ async def update_inline_message_with_audio(
         if track_id:
             file_id_cache.set(track_id, file_id)
             logger.info(f"Cached file_id for track ID {track_id}")
+
+        # No channel forwarding here - we'll handle it after this function
 
         logger.info("Successfully updated inline message with audio")
         return True
@@ -1021,16 +1092,20 @@ async def edit_message_with_audio(
     filepath: str,
     track_info: Dict[str, Any],
     inline_message_id: Optional[str] = None,
+    user_info: Optional[Dict[str, Any]] = None,
+    thumbnail: Optional[BufferedInputFile] = None,
 ) -> tuple[bool, Optional[str], Optional[Any]]:
-    """Edit an existing message to add audio file instead of sending a new message.
+    """Edit message with audio file.
 
     Args:
         bot: Bot instance
-        chat_id: Chat ID
+        chat_id: Chat ID to edit message in
         message_id: Message ID to edit
         filepath: Path to audio file
         track_info: Track metadata
-        inline_message_id: Optional inline message ID to update with silence removal status
+        inline_message_id: Optional inline message ID for updates
+        user_info: Optional user information for attribution in channel forwarding
+        thumbnail: Optional pre-downloaded thumbnail for the audio
 
     Returns:
         tuple[bool, Optional[str], Optional[Any]]:
@@ -1038,251 +1113,131 @@ async def edit_message_with_audio(
             - str: Error type if failed ('permission' or 'system' or None)
             - Any: Message object if successful, None otherwise
     """
-    original_filepath = filepath
-    trimmed_file_created = False
-
-    logger.info(f"Editing message {message_id} with audio file")
-
-    # Check if we have a cached file_id for this track
-    track_id = str(track_info.get("id", ""))
-    cached_file_id = None
-
-    if track_id:
-        cached_file_id = file_id_cache.get(track_id)
-        if cached_file_id:
-            logger.info(f"Found cached file_id for track ID {track_id}")
-            try:
-                # Create caption and reply markup for the message
-                caption = format_track_info_caption(
-                    track_info, (await bot.get_me()).username
-                )
-                reply_markup = InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [
-                            soundcloud_button(track_info["permalink_url"]),
-                            artist_button(
-                                track_info["user"]["url"]
-                                + f"?urn={track_info['user']['urn']}"
-                            ),
-                        ],
-                        [
-                            InlineKeyboardButton(
-                                text="❓ Wrong Artist/Title? Click here!",
-                                url="https://t.me/id3_robot?start=dlmus",
-                            ),
-                        ],
-                    ]
-                )
-
-                # Get artwork URL for thumbnail
-                artwork_url = track_info.get("artwork_url", "")
-                if artwork_url:
-                    artwork_url = get_high_quality_artwork_url(artwork_url)
-
-                # Create media object with cached file_id
-                media = InputMediaAudio(
-                    media=cached_file_id,
-                    caption=caption,
-                    parse_mode=ParseMode.HTML,
-                    title=track_info["title"],
-                    performer=track_info["artist"],
-                    thumbnail=(URLInputFile(artwork_url) if artwork_url else None),
-                )
-
-                # Edit the message with audio
-                result = await bot.edit_message_media(
-                    chat_id=chat_id,
-                    message_id=message_id,
-                    media=media,
-                    reply_markup=reply_markup,
-                )
-
-                # Cache the file_id for future use if the edit was successful
-                if hasattr(result, "audio") and result.audio and track_id:
-                    file_id = result.audio.file_id
-                    file_id_cache.set(track_id, file_id)
-                    logger.info(f"Cached file_id for track ID {track_id} after edit")
-
-                logger.info(f"Successfully edited message {message_id} with audio")
-
-                # Clean up the trimmed file if it was created - moved here before return
-                if trimmed_file_created and os.path.exists(filepath):
-                    try:
-                        os.remove(filepath)
-                        logger.info(f"Cleaned up trimmed file: {filepath}")
-                    except Exception as cleanup_err:
-                        logger.error(
-                            f"Error cleaning up trimmed file {filepath}: {cleanup_err}"
-                        )
-
-                return True, None, result
-
-            except Exception as e:
-                logger.error(f"Error editing message with audio: {e}")
-
-                # Clean up the trimmed file if there was an error - moved here inside exception handler
-                if trimmed_file_created and os.path.exists(filepath):
-                    try:
-                        os.remove(filepath)
-                        logger.info(
-                            f"Cleaned up trimmed file after edit error: {filepath}"
-                        )
-                    except Exception as cleanup_err:
-                        logger.error(
-                            f"Error cleaning up trimmed file after edit error: {cleanup_err}"
-                        )
-
-                # Check if this is a permission error
-                if is_permission_error(e):
-                    logger.error(
-                        f"Permission error when editing message with audio: {e}"
-                    )
-                    return False, "permission", None
-                else:
-                    logger.error(f"System error when editing message with audio: {e}")
-                    return False, "system", None
-
     try:
-        # Process audio to remove silence - more aggressive settings
-        processed_filepath = await detect_and_remove_silence(
-            filepath,
-            threshold_db=-55.0,  # Higher threshold to catch more subtle silence
-            min_silence_duration=5000,  # Lower minimum to 2 seconds for more aggressive removal
+        # Check if we have silence analysis information and if silence was detected
+        silence_analysis = track_info.get("silence_analysis", {})
+        has_silence = silence_analysis.get("has_silence", False)
+
+        processed_filepath = filepath
+        trimmed_file_created = False
+
+        # Only process audio to remove silence if waveform analysis indicates silence
+        if has_silence:
+            logger.info(
+                f"Waveform analysis indicates silence: {silence_analysis.get('silence_percentage', 0):.1f}% silent"
+            )
+
+            # Process audio to remove silence
+            processed_filepath = await detect_and_remove_silence(
+                filepath, threshold_db=-55.0, min_silence_duration=5000
+            )
+
+            # Track if we created a file that needs cleanup
+            trimmed_file_created = processed_filepath != filepath
+
+            if trimmed_file_created:
+                logger.info(f"Silence was detected and removed from audio file")
+                filepath = processed_filepath
+        else:
+            logger.info(
+                "No significant silence detected in waveform analysis, skipping silence removal"
+            )
+
+        # First send a new message with the audio file to get the file_id
+        success, error_type, result = await send_audio_file(
+            bot=bot,
+            chat_id=chat_id,
+            filepath=filepath,
+            track_info=track_info,
+            user_info=user_info,
+            thumbnail=thumbnail,
         )
 
-        # Track if we created a new file that needs cleanup
-        trimmed_file_created = processed_filepath != filepath
+        if not success:
+            return False, error_type, None
 
-        # If silence was removed, update the button to let the user know
-        if trimmed_file_created:
-            logger.info(f"Silence was detected and removed from audio file")
-
-            # Update the inline message if provided
-            if inline_message_id:
-                try:
-                    await bot.edit_message_reply_markup(
-                        inline_message_id=inline_message_id,
-                        reply_markup=InlineKeyboardMarkup(
-                            inline_keyboard=[
-                                [download_progress_button("removing_silence")]
-                            ]
-                        ),
-                    )
-                    logger.info("Updated button to show silence removal status")
-                except Exception as e:
-                    logger.warning(
-                        f"Error updating button to silence removal status: {e}"
-                    )
-
-            logger.info(f"Using trimmed audio file: {processed_filepath}")
-            filepath = processed_filepath
-
-        # Prepare audio file
-        audio = FSInputFile(filepath)
-
-        # Get thumbnail using the centralized worker function
-        thumbnail = await get_resized_thumbnail(track_info)
-
-        logger.info(f"Editing message {message_id} to add audio")
+        # Now delete the old message
         try:
-            # Format caption and get reply markup
-            caption = format_track_info_caption(
-                track_info, (await bot.get_me()).username
-            )
-            reply_markup = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        soundcloud_button(track_info["permalink_url"]),
-                        artist_button(
-                            track_info["user"]["url"]
-                            + f"?urn={track_info['user']['urn']}"
-                        ),
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            text="❓ Wrong Artist/Title? Click here!",
-                            url="https://t.me/id3_robot?start=dlmus",
-                        ),
-                    ],
-                ]
-            )
+            await bot.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception as e:
+            logger.warning(f"Failed to delete original message: {e}")
+            # Continue since we already sent the new message with audio
 
-            # Create media object directly from the file
-            media = InputMediaAudio(
-                media=audio,
-                caption=caption,
-                parse_mode=ParseMode.HTML,
-                title=track_info["title"],
-                performer=track_info["artist"],
-                thumbnail=thumbnail,
-            )
-
-            # Edit the message with audio directly
-            result = await bot.edit_message_media(
-                chat_id=chat_id,
-                message_id=message_id,
-                media=media,
-                reply_markup=reply_markup,
-            )
-
-            # Cache the file_id for future use if the edit was successful
-            if hasattr(result, "audio") and result.audio and track_id:
-                file_id = result.audio.file_id
-                file_id_cache.set(track_id, file_id)
-                logger.info(f"Cached file_id for track ID {track_id} after edit")
-
-            logger.info(f"Successfully edited message {message_id} with audio")
-
-            # Clean up the trimmed file if it was created - moved here before return
-            if trimmed_file_created and os.path.exists(filepath):
-                try:
-                    os.remove(filepath)
-                    logger.info(f"Cleaned up trimmed file: {filepath}")
-                except Exception as cleanup_err:
-                    logger.error(
-                        f"Error cleaning up trimmed file {filepath}: {cleanup_err}"
-                    )
-
-            return True, None, result
-
-        except Exception as edit_err:
-            # Clean up the trimmed file if there was an error - moved here inside exception handler
-            if trimmed_file_created and os.path.exists(filepath):
-                try:
-                    os.remove(filepath)
-                    logger.info(f"Cleaned up trimmed file after edit error: {filepath}")
-                except Exception as cleanup_err:
-                    logger.error(
-                        f"Error cleaning up trimmed file after edit error: {cleanup_err}"
-                    )
-
-            # Check if this is a permission error
-            if is_permission_error(edit_err):
+        # Clean up the trimmed file if it was created
+        if trimmed_file_created and os.path.exists(processed_filepath):
+            try:
+                os.remove(processed_filepath)
+                logger.info(f"Cleaned up trimmed file: {processed_filepath}")
+            except Exception as e:
                 logger.error(
-                    f"Permission error when editing message with audio: {edit_err}"
+                    f"Error cleaning up trimmed file {processed_filepath}: {e}"
                 )
-                return False, "permission", None
-            else:
-                logger.error(
-                    f"System error when editing message with audio: {edit_err}"
-                )
-                return False, "system", None
+
+        return True, None, result
 
     except Exception as e:
         logger.error(f"Error editing message with audio: {e}")
-
-        # Clean up the trimmed file if there was an error
-        if (
-            trimmed_file_created
-            and filepath != original_filepath
-            and os.path.exists(filepath)
-        ):
-            try:
-                os.remove(filepath)
-                logger.info(f"Cleaned up trimmed file after error: {filepath}")
-            except Exception as cleanup_err:
-                logger.error(
-                    f"Error cleaning up trimmed file after error: {cleanup_err}"
-                )
-
         return False, "system", None
+
+
+async def download_track_and_thumbnail(
+    download_url: str, filepath: str, track_info: Dict[str, Any]
+) -> tuple[bool, Optional[BufferedInputFile]]:
+    """
+    Download track audio and thumbnail image concurrently to improve performance.
+
+    Args:
+        download_url: URL to download the audio from
+        filepath: Path to save the audio file
+        track_info: Track metadata containing artwork_url
+
+    Returns:
+        tuple[bool, Optional[BufferedInputFile]]:
+            - bool: True if audio download successful, False otherwise
+            - Optional[BufferedInputFile]: Prepared thumbnail or None if unavailable/error
+    """
+    # Start timing for performance measurement
+    start_time = time.time()
+
+    # Extract artwork URL for downloading
+    artwork_url = track_info.get("artwork_url")
+    thumbnail_task = None
+
+    if artwork_url:
+        # Use lower quality artwork for thumbnails to reduce bandwidth
+        artwork_url = get_low_quality_artwork_url(artwork_url)
+
+        # Start thumbnail download and processing task
+        thumbnail_task = asyncio.create_task(download_and_resize_image(artwork_url))
+        logger.info("Started concurrent thumbnail download")
+
+    # Start audio download task
+    download_task = asyncio.create_task(download_audio(download_url, filepath))
+
+    # Wait for both tasks to complete
+    results = await asyncio.gather(
+        download_task,
+        thumbnail_task if thumbnail_task else asyncio.sleep(0),
+        return_exceptions=True,
+    )
+
+    # Process audio download result
+    download_success = results[0]
+    if isinstance(download_success, Exception):
+        logger.error(f"Audio download failed with exception: {download_success}")
+        download_success = False
+
+    # Process thumbnail result if it was started
+    thumbnail = None
+    if thumbnail_task:
+        thumbnail_data = results[1]
+        if isinstance(thumbnail_data, Exception):
+            logger.error(f"Thumbnail download failed with exception: {thumbnail_data}")
+        elif thumbnail_data:
+            thumbnail = BufferedInputFile(thumbnail_data, filename="thumbnail.jpg")
+
+    # Calculate and log the total time
+    total_time = time.time() - start_time
+    logger.info(f"Concurrent download completed in {total_time:.2f} seconds")
+
+    return download_success, thumbnail

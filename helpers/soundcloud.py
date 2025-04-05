@@ -4,7 +4,6 @@ import time
 import asyncio
 import pathlib
 import tempfile
-import unicodedata
 from typing import Any, Dict, List, Tuple, Union, Optional
 from urllib.parse import urlparse
 
@@ -13,7 +12,7 @@ import mutagen
 import aiofiles
 from mutagen.id3 import ID3
 
-from utils import get_high_quality_artwork_url
+from utils import get_low_quality_artwork_url, get_high_quality_artwork_url  # noqa
 from config import (
     DEBUG_SEARCH,
     DOWNLOAD_PATH,
@@ -398,7 +397,7 @@ async def resolve_url(url: str) -> dict:
     Returns:
         dict: Track details
     """
-    logger.info(f"Resolving SoundCloud URL: {url}")
+
     try:
         # Get a valid client ID
         client_id = await get_cached_client_id()
@@ -470,9 +469,39 @@ async def download_audio(url: str, filepath: str) -> bool:
     retry_count = 0
     last_error = None
 
+    # Optimize for large files - use multiple chunks for faster download
+    # Define optimal number of chunks for parallel downloading
+    optimal_chunks = 4  # Split into 4 parts for parallel download
+
+    # Optimized TCP settings for better throughput
+    tcp_connector = aiohttp.TCPConnector(
+        limit=10,  # Allow more parallel connections
+        ttl_dns_cache=300,  # Cache DNS results for 5 minutes
+        ssl=False,  # Disable SSL for better performance when downloading
+        use_dns_cache=True,  # Use DNS cache
+        family=0,  # Support both IPv4 and IPv6
+    )
+
     while retry_count < max_retries:
         try:
-            async with aiohttp.ClientSession() as session:
+            # Create a session with optimized parameters
+            timeout = aiohttp.ClientTimeout(
+                total=None,  # No overall timeout
+                sock_connect=15,  # 15 seconds to establish connection
+                sock_read=30,  # 30 seconds to read data chunks
+            )
+
+            # Use a single session for the entire download process
+            async with aiohttp.ClientSession(
+                connector=tcp_connector,
+                timeout=timeout,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+                    "Accept": "*/*",
+                    "Accept-Encoding": "gzip, deflate, br",
+                    "Connection": "keep-alive",
+                },
+            ) as session:
                 if DEBUG_DOWNLOAD:
                     logger.debug(f"Starting download request to URL: {url}")
 
@@ -481,116 +510,330 @@ async def download_audio(url: str, filepath: str) -> bool:
                     separator = "&" if "?" in url else "?"
                     url = f"{url}{separator}client_id={await get_cached_client_id()}"
 
-                async with session.get(url) as response:
-                    status = response.status
-                    logger.info(f"Download response status: {status}")
+                # First make a HEAD request to check content length for range support
+                try:
+                    async with session.head(url) as head_response:
+                        if head_response.status == 200:
+                            content_length = int(
+                                head_response.headers.get("Content-Length", 0)
+                            )
+                            accept_ranges = head_response.headers.get(
+                                "Accept-Ranges", ""
+                            )
+                            supports_ranges = (
+                                content_length > 0 and accept_ranges == "bytes"
+                            )
 
-                    if status == 200:
-                        content_length = int(response.headers.get("Content-Length", 0))
-                        content_type = response.headers.get("Content-Type", "unknown")
-                        logger.info(
-                            f"File size: {content_length / 1024 / 1024:.2f} MB, Content-Type: {content_type}"
+                            # Only use range requests for larger files
+                            use_parallel_download = (
+                                supports_ranges and content_length > 8 * 1024 * 1024
+                            )  # > 8MB
+                        else:
+                            use_parallel_download = False
+                            content_length = 0
+                except Exception as head_err:
+                    logger.warning(
+                        f"HEAD request failed, falling back to regular download: {head_err}"
+                    )
+                    use_parallel_download = False
+                    content_length = 0
+
+                # For larger files, use parallel downloads with range requests if supported
+                if use_parallel_download:
+                    logger.info(
+                        f"Using parallel download for {content_length / (1024 * 1024):.2f} MB file"
+                    )
+
+                    # Create directory if it doesn't exist
+                    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+
+                    # Calculate chunk sizes
+                    chunk_size = content_length // optimal_chunks
+                    chunks = []
+
+                    for i in range(optimal_chunks):
+                        start_byte = i * chunk_size
+                        end_byte = (
+                            None
+                            if i == optimal_chunks - 1
+                            else (i + 1) * chunk_size - 1
                         )
+                        chunks.append((start_byte, end_byte))
 
-                        if DEBUG_DOWNLOAD:
-                            headers = dict(response.headers)
-                            logger.debug(f"Full response headers: {headers}")
+                    # Create temporary files for each chunk
+                    temp_files = []
+                    for i in range(optimal_chunks):
+                        fd, temp_path = tempfile.mkstemp(suffix=f".part{i}")
+                        os.close(fd)
+                        temp_files.append(temp_path)
 
-                        # Check if we might have received an m3u8 playlist despite not detecting it in the URL
-                        if content_length < 1000 and (
-                            content_type.startswith("application/")
-                            or content_type.startswith("text/")
-                        ):
-                            content = await response.text()
-                            if "#EXTM3U" in content or ".m3u8" in content:
-                                logger.info(
-                                    "Detected HLS stream from response content, will use special handling"
+                    # Download chunks in parallel
+                    download_start = time.time()
+
+                    async def download_chunk(
+                        session, chunk_index, start_byte, end_byte, temp_path
+                    ):
+                        headers = {
+                            "Range": f"bytes={start_byte}-{end_byte if end_byte else ''}"
+                        }
+                        try:
+                            async with session.get(url, headers=headers) as response:
+                                if response.status in (
+                                    200,
+                                    206,
+                                ):  # 200 OK or 206 Partial Content
+                                    downloaded = 0
+
+                                    async with aiofiles.open(temp_path, "wb") as f:
+                                        # Use much larger chunks for reading (4MB)
+                                        read_chunk_size = 4 * 1024 * 1024
+                                        async for data in response.content.iter_chunked(
+                                            read_chunk_size
+                                        ):
+                                            await f.write(data)
+                                            downloaded += len(data)
+
+                                    return True
+                                else:
+                                    logger.error(
+                                        f"Failed to download chunk {chunk_index}, status: {response.status}"
+                                    )
+                                    return False
+                        except Exception as e:
+                            logger.error(f"Error downloading chunk {chunk_index}: {e}")
+                            return False
+
+                    # Start all chunk downloads concurrently
+                    tasks = []
+                    for i, (start_byte, end_byte) in enumerate(chunks):
+                        task = asyncio.create_task(
+                            download_chunk(
+                                session, i, start_byte, end_byte, temp_files[i]
+                            )
+                        )
+                        tasks.append(task)
+
+                    # Wait for all chunks to download and log progress
+                    progress_task = asyncio.create_task(
+                        log_download_progress(tasks, content_length, download_start)
+                    )
+
+                    results = await asyncio.gather(*tasks)
+                    await progress_task
+
+                    # Check if all chunks downloaded successfully
+                    if all(results):
+                        # Combine chunks into final file
+                        async with aiofiles.open(filepath, "wb") as outfile:
+                            for temp_file in temp_files:
+                                async with aiofiles.open(temp_file, "rb") as infile:
+                                    while True:
+                                        chunk = await infile.read(
+                                            8 * 1024 * 1024
+                                        )  # Read 8MB at a time
+                                        if not chunk:
+                                            break
+                                        await outfile.write(chunk)
+
+                        # Clean up temporary files
+                        for temp_file in temp_files:
+                            try:
+                                os.unlink(temp_file)
+                            except Exception as e:
+                                logger.warning(
+                                    f"Error removing temporary file {temp_file}: {e}"
                                 )
-                                return await download_hls_audio(url, filepath)
 
-                        # Create directory if it doesn't exist
-                        os.makedirs(os.path.dirname(filepath), exist_ok=True)
-
-                        async with aiofiles.open(filepath, "wb") as f:
-                            chunk_size = 1024 * 1024  # 1MB chunks
-                            downloaded = 0
-                            start_time = time.time()
-                            last_log_time = start_time
-
-                            async for chunk in response.content.iter_chunked(
-                                chunk_size
-                            ):
-                                await f.write(chunk)
-                                downloaded += len(chunk)
-
-                                # Log progress for all files if DEBUG_DOWNLOAD is True
-                                # or for large files only if DEBUG_DOWNLOAD is False
-                                current_time = time.time()
-                                if DEBUG_DOWNLOAD or (content_length > 5 * 1024 * 1024):
-                                    # Log every second at most
-                                    if current_time - last_log_time >= 1.0:
-                                        progress = (
-                                            downloaded / content_length * 100
-                                            if content_length
-                                            else 0
-                                        )
-                                        speed = (
-                                            downloaded
-                                            / (current_time - start_time)
-                                            / 1024
-                                        )  # KB/s
-                                        logger.info(
-                                            f"Download progress: {progress:.1f}% ({downloaded / (1024 * 1024):.2f} MB / {content_length / (1024 * 1024):.2f} MB) - {speed:.1f} KB/s"
-                                        )
-                                        last_log_time = current_time
-
-                        download_time = time.time() - start_time
+                        download_time = time.time() - download_start
                         logger.info(
-                            f"Download completed: {filepath} in {download_time:.2f} seconds"
+                            f"Parallel download completed: {filepath} in {download_time:.2f} seconds, "
+                            f"average speed: {content_length / download_time / 1024:.1f} KB/s"
                         )
 
                         # Validate the downloaded file
-                        if os.path.getsize(filepath) < 1000:  # Less than 1 KB
+                        file_size = os.path.getsize(filepath)
+                        if file_size < 1000:  # Less than 1 KB
                             logger.error(
-                                f"Downloaded file is too small: {os.path.getsize(filepath)} bytes"
+                                f"Downloaded file is too small: {file_size} bytes"
                             )
-                            # Try next retry
-                            retry_count += 1
-                            continue
+                            return False
+
+                        if (
+                            abs(file_size - content_length) > 1024
+                        ):  # More than 1KB difference
+                            logger.warning(
+                                f"File size mismatch: expected {content_length} bytes, got {file_size} bytes"
+                            )
+                            # Continue anyway as this might be due to overhead or compression
 
                         return True
-
-                    elif status in (401, 403):
-                        logger.warning(
-                            f"Got {status} error, refreshing client ID and retrying..."
-                        )
-                        await refresh_client_id()
-                        retry_count += 1
-                        continue
                     else:
-                        error_text = await response.text()
-                        last_error = f"Download failed: Status {status}, Response: {error_text[:200]}"
-                        logger.error(last_error)
-                        retry_count += 1
-                        continue
+                        logger.error(
+                            "Some chunks failed to download, falling back to regular download"
+                        )
+                        # Clean up temporary files
+                        for temp_file in temp_files:
+                            try:
+                                os.unlink(temp_file)
+                            except Exception:
+                                pass
+                else:
+                    # Regular sequential download for smaller files or when range requests not supported
+                    async with session.get(url) as response:
+                        status = response.status
+                        logger.info(f"Download response status: {status}")
 
-        except Exception as e:
-            last_error = f"Exception during download: {type(e).__name__}: {e}"
-            logger.error(last_error, exc_info=True)
+                        if status == 200:
+                            content_length = int(
+                                response.headers.get("Content-Length", 0)
+                            )
+                            content_type = response.headers.get(
+                                "Content-Type", "unknown"
+                            )
+                            logger.info(
+                                f"File size: {content_length / 1024 / 1024:.2f} MB, Content-Type: {content_type}"
+                            )
+
+                            if DEBUG_DOWNLOAD:
+                                headers = dict(response.headers)
+                                logger.debug(f"Full response headers: {headers}")
+
+                            # Check if we might have received an m3u8 playlist despite not detecting it in the URL
+                            if content_length < 1000 and (
+                                content_type.startswith("application/")
+                                or content_type == "text/plain"
+                            ):
+                                content = await response.text()
+                                if "#EXTM3U" in content or ".m3u8" in content:
+                                    logger.info(
+                                        "Detected HLS stream from response content, will use special handling"
+                                    )
+                                    return await download_hls_audio(url, filepath)
+
+                            # Create directory if it doesn't exist
+                            os.makedirs(os.path.dirname(filepath), exist_ok=True)
+
+                            async with aiofiles.open(filepath, "wb") as f:
+                                # Use larger chunks for better throughput (4MB instead of 1MB)
+                                chunk_size = 4 * 1024 * 1024
+                                downloaded = 0
+                                start_time = time.time()
+                                last_log_time = start_time
+
+                                async for chunk in response.content.iter_chunked(
+                                    chunk_size
+                                ):
+                                    await f.write(chunk)
+                                    downloaded += len(chunk)
+
+                                    # Log progress for all files if DEBUG_DOWNLOAD is True
+                                    # or for large files only if DEBUG_DOWNLOAD is False
+                                    current_time = time.time()
+                                    if DEBUG_DOWNLOAD or (
+                                        content_length > 1 * 1024 * 1024
+                                    ):
+                                        # Log every second at most
+                                        if current_time - last_log_time >= 1.0:
+                                            progress = (
+                                                downloaded / content_length * 100
+                                                if content_length
+                                                else 0
+                                            )
+                                            speed = (
+                                                downloaded
+                                                / (current_time - start_time)
+                                                / 1024
+                                            )  # KB/s
+                                            logger.info(
+                                                f"Download progress: {progress:.1f}% ({downloaded / (1024 * 1024):.2f} MB / {content_length / (1024 * 1024):.2f} MB) - {speed:.1f} KB/s"
+                                            )
+                                            last_log_time = current_time
+
+                            download_time = time.time() - start_time
+                            logger.info(
+                                f"Download completed: {filepath} in {download_time:.2f} seconds, "
+                                f"average speed: {downloaded / download_time / 1024:.1f} KB/s"
+                            )
+
+                            # Validate the downloaded file
+                            if os.path.getsize(filepath) < 1000:  # Less than 1 KB
+                                logger.error(
+                                    f"Downloaded file is too small: {os.path.getsize(filepath)} bytes"
+                                )
+                                return False
+
+                            return True
+                        elif status in (301, 302, 303, 307, 308):
+                            # Handle redirects
+                            redirect_url = response.headers.get("Location")
+                            if redirect_url:
+                                logger.info(f"Following redirect to: {redirect_url}")
+                                return await download_audio(redirect_url, filepath)
+                            else:
+                                logger.error("Redirect without Location header")
+                                return False
+                        elif status == 401 or status == 403:
+                            # Authentication error - likely client ID issue
+                            logger.warning(
+                                f"Authentication error (status {status}), refreshing client ID"
+                            )
+                            await refresh_client_id()
+                            retry_count += 1
+                        else:
+                            logger.error(f"HTTP error: {status}")
+                            retry_count += 1
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"Timeout during download (attempt {retry_count + 1}/{max_retries})"
+            )
             retry_count += 1
-            continue
+        except aiohttp.ClientError as e:
+            logger.warning(
+                f"HTTP client error during download (attempt {retry_count + 1}/{max_retries}): {e}"
+            )
+            last_error = e
+            retry_count += 1
+        except Exception as e:
+            logger.error(f"Unexpected error during download: {type(e).__name__}: {e}")
+            last_error = e
+            break  # Don't retry for unexpected errors
 
-    # If we get here, all retries failed
-    if retry_count == max_retries:
-        logger.error(
-            f"All {max_retries} download attempts failed. Last error: {last_error}"
-        )
-
-        # Try fallback download method
-        logger.info("Attempting fallback download method...")
-        return await download_audio_fallback(url, filepath)
+    logger.error(f"Download failed after {retry_count} retries")
+    if last_error:
+        logger.error(f"Last error: {last_error}")
 
     return False
+
+
+async def log_download_progress(chunk_tasks, total_size, start_time):
+    """Log the progress of a parallel download operation"""
+    last_log_time = time.time()
+    while not all(task.done() for task in chunk_tasks):
+        await asyncio.sleep(1.0)  # Check progress every second
+
+        current_time = time.time()
+        elapsed = current_time - start_time
+
+        # Only log if at least a second has passed since last log
+        if current_time - last_log_time >= 1.0:
+            # We don't know exact progress of each chunk, so estimate based on task status
+            completed_tasks = sum(1 for task in chunk_tasks if task.done())
+            in_progress_tasks = len(chunk_tasks) - completed_tasks
+
+            # Estimate progress as (completed tasks + half of in-progress tasks) / total tasks
+            estimated_progress = (completed_tasks + (in_progress_tasks * 0.5)) / len(
+                chunk_tasks
+            )
+            estimated_downloaded = total_size * estimated_progress
+
+            if elapsed > 0:
+                speed = estimated_downloaded / elapsed / 1024  # KB/s
+                logger.info(
+                    f"Parallel download progress: {estimated_progress * 100:.1f}% - "
+                    f"Speed: {speed:.1f} KB/s - {completed_tasks}/{len(chunk_tasks)} chunks completed"
+                )
+
+            last_log_time = current_time
 
 
 async def download_hls_audio(url: str, filepath: str) -> bool:
@@ -680,32 +923,80 @@ async def download_audio_fallback(url: str, filepath: str) -> bool:
         # Create directory if it doesn't exist
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
 
-        # Use aiohttp for asynchronous HTTP requests instead of synchronous requests
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=30) as response:
+        # Use optimized TCP settings
+        tcp_connector = aiohttp.TCPConnector(
+            limit=10,
+            ttl_dns_cache=300,
+            ssl=False,
+            use_dns_cache=True,
+            family=0,
+        )
+
+        # Create optimized session with appropriate timeouts
+        timeout = aiohttp.ClientTimeout(total=None, sock_connect=15, sock_read=30)
+
+        # Use aiohttp for asynchronous HTTP requests with optimized settings
+        async with aiohttp.ClientSession(
+            connector=tcp_connector,
+            timeout=timeout,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+                "Accept": "*/*",
+                "Accept-Encoding": "gzip, deflate, br",
+                "Connection": "keep-alive",
+            },
+        ) as session:
+            async with session.get(url) as response:
                 if response.status != 200:
                     logger.error(f"Fallback download HTTP error: {response.status}")
                     return False
 
-                # Create directory if it doesn't exist
-                os.makedirs(os.path.dirname(filepath), exist_ok=True)
+                content_length = int(response.headers.get("Content-Length", 0))
+                logger.info(
+                    f"Fallback download content length: {content_length / 1024 / 1024:.2f} MB"
+                )
 
-                # Write file in chunks asynchronously
-                with open(filepath, "wb") as f:
-                    chunk_size = 8192
-                    while True:
-                        chunk = await response.content.read(chunk_size)
-                        if not chunk:
-                            break
-                        f.write(chunk)
+                # Use async file operations for better performance
+                async with aiofiles.open(filepath, "wb") as f:
+                    # Use larger chunk size (4MB) for better throughput
+                    chunk_size = 4 * 1024 * 1024
+                    downloaded = 0
+                    start_time = time.time()
+                    last_log_time = start_time
 
-        logger.info(f"Fallback download completed: {filepath}")
+                    async for chunk in response.content.iter_chunked(chunk_size):
+                        await f.write(chunk)
+                        downloaded += len(chunk)
+
+                        # Log progress
+                        current_time = time.time()
+                        if current_time - last_log_time >= 1.0:
+                            progress = (
+                                (downloaded / content_length * 100)
+                                if content_length
+                                else 0
+                            )
+                            speed = (
+                                downloaded / (current_time - start_time) / 1024
+                            )  # KB/s
+                            logger.info(
+                                f"Fallback download progress: {progress:.1f}% "
+                                f"({downloaded / (1024 * 1024):.2f} MB / {content_length / (1024 * 1024):.2f} MB) - "
+                                f"{speed:.1f} KB/s"
+                            )
+                            last_log_time = current_time
+
+                download_time = time.time() - start_time
+                if download_time > 0:
+                    speed = downloaded / download_time / 1024  # KB/s
+                    logger.info(
+                        f"Fallback download completed in {download_time:.2f}s, avg speed: {speed:.1f} KB/s"
+                    )
 
         # Validate the downloaded file
-        if os.path.getsize(filepath) < 1000:  # Less than 1 KB
-            logger.error(
-                f"Downloaded file is too small: {os.path.getsize(filepath)} bytes"
-            )
+        file_size = os.path.getsize(filepath)
+        if file_size < 1000:  # Less than 1 KB
+            logger.error(f"Downloaded file is too small: {file_size} bytes")
             return False
 
         return True
@@ -954,7 +1245,6 @@ async def add_id3_tags(filepath: str, track_data: dict) -> None:
         filepath: Path to the audio file
         track_data: Track data from SoundCloud API
     """
-    logger.info(f"Adding ID3 tags to {filepath}")
     try:
         # Check if we have extraction info from download_track
         if "_extracted_info" in track_data:
@@ -1043,10 +1333,6 @@ async def add_id3_tags(filepath: str, track_data: dict) -> None:
 
             if DEBUG_EXTRACTIONS:
                 logger.info(f"ID3: Final artist: '{artist}', Final title: '{title}'")
-
-            logger.info(
-                f"Final values for ID3 tags - Artist: '{artist}', Title: '{title}'"
-            )
 
         # Define synchronous functions to run in a separate thread
         def apply_basic_tags():
@@ -1162,7 +1448,7 @@ async def download_track(track_id: str, bot_user: Dict[str, Any]) -> Dict[str, A
             )
             for i, section in enumerate(silence_analysis["silence_sections"]):
                 logger.info(
-                    f"  Section {i+1}: {section['start']:.1f}% - {section['end']:.1f}% ({section['percentage']:.1f}% of track)"
+                    f"  Section {i + 1}: {section['start']:.1f}% - {section['end']:.1f}% ({section['percentage']:.1f}% of track)"
                 )
 
     # Original title
@@ -1301,7 +1587,6 @@ async def download_track(track_id: str, bot_user: Dict[str, Any]) -> Dict[str, A
     artwork_url = track_data.get("artwork_url", "")
     if artwork_url:
         artwork_url = get_high_quality_artwork_url(artwork_url)
-        logger.info(f"Using high-quality artwork URL: {artwork_url}")
 
     # Add metadata
     metadata_start = time.time()
@@ -1673,9 +1958,6 @@ async def extract_track_id_from_url(url: str) -> Union[str, Dict[str, Any]]:
             except Exception as e:
                 logger.error(f"Error following redirect for shortened URL: {e}")
                 return None
-
-        # Use the SoundCloud resolver API to get track info
-        logger.info(f"Resolving SoundCloud URL: {url}")
 
         # Build API request
         params = {
