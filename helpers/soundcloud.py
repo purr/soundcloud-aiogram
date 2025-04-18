@@ -1018,7 +1018,7 @@ def extract_artist_title(title: str) -> Tuple[str, str]:
     """
 
     # Define dash characters to use
-    dash_chars = ["-", "−", "–", "—", "―", "by", "//"]
+    dash_chars = ["-", "-", "-", "−", "–", "—", "―", "by", "//"]
 
     if DEBUG_EXTRACTIONS:
         logger.info(f"EXTRACT: Beginning extraction for title: '{title}'")
@@ -1027,9 +1027,10 @@ def extract_artist_title(title: str) -> Tuple[str, str]:
     matches = re.findall(pattern, title)
     if matches:
         for match in matches:
-            if match:
-                if any(dash in match for dash in dash_chars):
-                    return None, title
+            for m in match:
+                if m:
+                    if any(dash in m for dash in dash_chars):
+                        return None, title
 
     # Create the three types of separators
     dash_separators_both_spaces = [f" {dash} " for dash in dash_chars]
