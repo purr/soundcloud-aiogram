@@ -144,6 +144,7 @@ The bot now uses a single-message approach for downloads, where it first sends a
 
 ## Version History
 
+- v0.8.6: Fixed artist extraction from track titles, fixed mobile link
 - v0.8.5: Fixed silence removal status button to properly update when silence is detected and removed from audio files
 - v0.8.4: Added centralized thumbnail handling with a dedicated worker function for better code organization
 - v0.8.3: Enhanced error handling with button-only updates, implemented single-message approach for audio downloads, and improved permission detection

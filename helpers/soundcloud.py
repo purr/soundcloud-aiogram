@@ -1016,11 +1016,20 @@ def extract_artist_title(title: str) -> Tuple[str, str]:
     Returns:
         tuple: (artist, title) or (None, title) if artist couldn't be extracted
     """
-    if DEBUG_EXTRACTIONS:
-        logger.info(f"EXTRACT: Beginning extraction for title: '{title}'")
 
     # Define dash characters to use
     dash_chars = ["-", "−", "–", "—", "―", "by", "//"]
+
+    if DEBUG_EXTRACTIONS:
+        logger.info(f"EXTRACT: Beginning extraction for title: '{title}'")
+
+    pattern = r"""\((.*?)\)|\[(.*?)\]|\{(.*?)\}|\<(.*?)\>|"(.*?)"|'(.*?)'"""
+    matches = re.findall(pattern, title)
+    if matches:
+        for match in matches:
+            if match:
+                if any(dash in match for dash in dash_chars):
+                    return None, title
 
     # Create the three types of separators
     dash_separators_both_spaces = [f" {dash} " for dash in dash_chars]
@@ -1947,12 +1956,16 @@ async def extract_track_id_from_url(url: str) -> Union[str, Dict[str, Any]]:
         # Clean up the URL - remove any trailing whitespace, periods, etc.
         url = url.strip("., \t\n\r")
 
-        # Normalize URL format
-        if not url.startswith(("http://", "https://")):
+        url = url.replace("http://", "https://")
+        if not url.startswith(("https://")):
             url = "https://" + url
 
         # Try to fix malformed URLs where someone might have added space or other characters
-        url = re.sub(r"\s+(?=soundcloud\.com)", "", url)
+        url = (
+            re.sub(r"\s+(?=soundcloud\.com)", "", url)
+            .replace("m.soundcloud.com", "soundcloud.com")
+            .replace("www.soundcloud.com", "soundcloud.com")
+        )
 
         # Parse URL to handle different formats
         parsed_url = urlparse(url)
@@ -1965,7 +1978,7 @@ async def extract_track_id_from_url(url: str) -> Union[str, Dict[str, Any]]:
         # Make sure it's a SoundCloud domain
         if not any(
             domain in parsed_url.netloc
-            for domain in ["soundcloud.com", "m.soundcloud.com", "on.soundcloud.com"]
+            for domain in ["soundcloud.com", "on.soundcloud.com"]
         ):
             logger.warning(f"Not a SoundCloud domain: {parsed_url.netloc}")
             return None

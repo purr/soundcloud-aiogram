@@ -38,15 +38,9 @@ MAX_PLAYLIST_TRACKS_TO_SHOW = 50  # Maximum number of tracks to display from a p
 SOUNDCLOUD_LOGO_URL = "https://d21buns5ku92am.cloudfront.net/26628/images/419679-1x1_SoundCloudLogo_cloudmark-f5912b-original-1645807040.jpg"
 
 # Cache settings
-FILE_ID_CACHE_EXPIRY = int(
-    os.getenv("FILE_ID_CACHE_EXPIRY", 604800)
-)  # Default: 7 days in seconds (1 week)
-CACHE_CLEANUP_INTERVAL = int(
-    os.getenv("CACHE_CLEANUP_INTERVAL", 3600)
-)  # Default: 1 hour in seconds
-CACHE_FILE_PATH = os.getenv(
-    "CACHE_FILE_PATH", os.path.join("data", "file_id_cache.json")
-)
+FILE_ID_CACHE_EXPIRY = 604800
+CACHE_CLEANUP_INTERVAL = 3600
+CACHE_FILE_PATH = os.path.join("data", "file_id_cache.json")
 
 # Version
-VERSION = "0.8.5"
+VERSION = "0.8.6"
