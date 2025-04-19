@@ -268,8 +268,7 @@ async def fallback_download_failure_message(
         # Add Spotify URL if available
         if "spotify_url" in track_info:
             spotify_url = track_info["spotify_url"]
-            spotify_url_no_embed = spotify_url.replace("://", "://\u200c")
-            failure_text += f"\n\n🎧 <b>Spotify:</b> <a href='{spotify_url_no_embed}'>{html.escape(spotify_url)}</a>"
+            failure_text += f"\n\n🎧 <b>Spotify:</b> <a href='{spotify_url}'>{html.escape(spotify_url)}</a>"
 
         # Include the search query if provided
         if search_query:
@@ -374,8 +373,8 @@ async def fallback_system_error_message(
     """Fallback method for when updating just the markup fails."""
     try:
         final_caption = "❌ <b>System Error</b>\n\n"
-        permalink_url_no_embed = track_info["permalink_url"].replace("://", "://\u200c")
-        final_caption += f"♫ <a href='{permalink_url_no_embed}'><b>{html.escape(track_info['title'])}</b> - <b>{html.escape(track_info['artist'])}</b></a>\n\n"
+        permalink_url = track_info["permalink_url"]
+        final_caption += f"♫ <a href='{permalink_url}'><b>{html.escape(track_info['title'])}</b> - <b>{html.escape(track_info['artist'])}</b></a>\n\n"
         final_caption += (
             f"<b>Error:</b> There was a technical issue processing this track.\n"
         )
@@ -384,8 +383,7 @@ async def fallback_system_error_message(
         # Add Spotify URL if available
         if "spotify_url" in track_info:
             spotify_url = track_info["spotify_url"]
-            spotify_url_no_embed = spotify_url.replace("://", "://\u200c")
-            final_caption += f"🎧 <b>Spotify:</b> <a href='{spotify_url_no_embed}'>{html.escape(spotify_url)}</a>\n\n"
+            final_caption += f"🎧 <b>Spotify:</b> <a href='{spotify_url}'>{html.escape(spotify_url)}</a>\n\n"
 
         if search_query:
             final_caption += (
@@ -417,8 +415,7 @@ async def fallback_system_error_message(
             # Add Spotify URL in simpler fallback too
             if "spotify_url" in track_info:
                 spotify_url = track_info["spotify_url"]
-                spotify_url_no_embed = spotify_url.replace("://", "://\u200c")
-                simple_caption += f"\n\n🎧 <b>Spotify:</b> <a href='{spotify_url_no_embed}'>{html.escape(spotify_url)}</a>"
+                simple_caption += f"\n\n🎧 <b>Spotify:</b> <a href='{spotify_url}'>{html.escape(spotify_url)}</a>"
 
             if search_query:
                 simple_caption += (

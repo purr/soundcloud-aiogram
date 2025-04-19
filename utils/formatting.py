@@ -61,8 +61,11 @@ def format_track_info_caption(track_info: Dict, bot_username: str) -> str:
         Formatted caption HTML string
     """
     # Ensure track_info has all required keys
+
     permalink_url = track_info.get("permalink_url", "https://soundcloud.com")
     artwork_url = track_info.get("artwork_url")
+    spotify_url = track_info.get("spotify_url", "")
+
     display_title = track_info.get("display_title", "")
 
     # Ensure display_title is not empty
@@ -71,22 +74,18 @@ def format_track_info_caption(track_info: Dict, bot_username: str) -> str:
         track_info["display_title"] = display_title
 
     # Create initial caption with SoundCloud track link
-    # Using zero-width space (\u200c) inside the URL to prevent embedding while keeping it clickable
-    permalink_url_no_embed = permalink_url.replace("://", "://\u200c")
-    caption = f"𝄞 <a href='{permalink_url_no_embed}'>Link</a>"
+    # Using the proper HTML tag structure to prevent embedding
+    caption = f"𝄞 <a href='{permalink_url}'>Link</a>"
 
     # Add Spotify link if available (positioned after the SoundCloud link)
     if "spotify_url" in track_info:
-        spotify_url = track_info["spotify_url"]
-        spotify_url_no_embed = spotify_url.replace("://", "://\u200c")
-        caption += f" ❀ <a href='{spotify_url_no_embed}'>Spotify</a>"
+        caption += f" ❀ <a href='{spotify_url}'>Spotify</a>"
 
     # Add artwork link if available
     if artwork_url:
         # Convert to high resolution
         artwork_url = get_high_quality_artwork_url(artwork_url)
-        artwork_url_no_embed = artwork_url.replace("://", "://\u200c")
-        caption += f" ꕤ <a href='{artwork_url_no_embed}'>Cover</a>"
+        caption += f" ꕤ <a href='{artwork_url}'>Cover</a>"
 
     # Add bot username
     caption += f" ♬ @{bot_username}"
@@ -110,9 +109,9 @@ def format_error_caption(
     # Format the error message
     caption = f"❌ <b>{error_message}</b>\n\n"
 
-    # Using zero-width space (\u200c) inside the URL to prevent embedding
-    permalink_url_no_embed = track_info["permalink_url"].replace("://", "://\u200c")
-    caption += f"♫ <a href='{permalink_url_no_embed}'><b>{html.escape(track_info['display_title'])}</b></a>"
+    # Properly format the link without modifying the URL
+    permalink_url = track_info["permalink_url"]
+    caption += f"♫ <a href='{permalink_url}'><b>{html.escape(track_info['display_title'])}</b></a>"
 
     return caption
 
@@ -131,8 +130,8 @@ def format_success_caption(message: str, track_info: Dict, bot_username: str) ->
     # Format the success message
     caption = f"✅ <b>{message}</b>\n\n"
 
-    # Using zero-width space (\u200c) inside the URL to prevent embedding
-    permalink_url_no_embed = track_info["permalink_url"].replace("://", "://\u200c")
-    caption += f"♫ <a href='{permalink_url_no_embed}'><b>{html.escape(track_info['display_title'])}</b></a>"
+    # Properly format the link without modifying the URL
+    permalink_url = track_info["permalink_url"]
+    caption += f"♫ <a href='{permalink_url}'><b>{html.escape(track_info['display_title'])}</b></a>"
 
     return caption
